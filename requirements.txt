@@ -1,0 +1,14 @@
+--extra-index-url https://download.pytorch.org/whl/cu128
+
+torch
+torchvision
+torchaudio
+
+pandas>=2.3.0
+numpy>=1.24
+scipy>=1.10
+scikit-learn>=1.2
+pyyaml>=6.0
+pytest>=8.4.0
+tqdm>=4.64
+matplotlib>=3.7
