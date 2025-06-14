@@ -1,14 +1,11 @@
-# src/config.py
 import os
 import yaml
 import torch
 
-# locate the YAML file (assuming you're running from the repo root)
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
 with open(_CONFIG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
 
-# Expose top‐level sections as attributes:
 PYCBC = _cfg["pycbc"]
 TIME_WINDOW = _cfg["time_window"]
 SAMPLING_RANGES = _cfg["sampling_ranges"]

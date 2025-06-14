@@ -1,5 +1,3 @@
-# src/data_generation.py
-
 import numpy as np
 from scipy.signal import hilbert
 from pycbc.waveform import get_td_waveform

@@ -1,12 +1,12 @@
 pycbc:
-  waveform_name: "IMRPhenomXPHM"
-  delta_t: 0.0001220703125    # 1/8192
+  waveform_name: "IMRPhenomPv2"
+  delta_t: 0.00024414062   # 1/4096
   f_lower: 20.0
   detector_name: "H1"
   psi_fixed: 0.0
 
 time_window:
-  t_before: 4.0
+  t_before: 8.0
   t_after: 1.0
 
 sampling_ranges:
@@ -29,12 +29,12 @@ sampling_ranges:
 
 training:
   num_samples: 10
-  batch_size: 64
-  num_epochs: 200
-  learning_rate: 0.001
-  patience: 10
-  fine_tune_epochs: 30
-  fine_tune_lr: 0.0001
+  batch_size: 128
+  num_epochs: 40
+  learning_rate: 0.005
+  patience: 5
+  fine_tune_epochs: 50
+  fine_tune_lr: 0.0005
 
 device: "cuda"
 

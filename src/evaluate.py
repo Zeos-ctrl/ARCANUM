@@ -10,7 +10,7 @@ from scipy.stats import gaussian_kde
 
 from src.data_generation import sample_parameters, build_common_times, build_waveform_chunks
 from src.models import PhaseDNN_Full, AmplitudeNet
-from src.utils import trimming_indices
+from src.utils import trimming_indices, compute_laplace_hessians
 
 from src.config import (
     WAVEFORM_NAME, DELTA_T, F_LOWER, DETECTOR_NAME, PSI_FIXED,
@@ -62,59 +62,6 @@ def load_models(checkpoint_dir: str):
     amp_model.eval()
 
     return phase_model, amp_model
-
-
-def compute_laplace_hessians(train_loader, phase_model, amp_model, lambda_A=1e-6, lambda_phi=1e-6):
-    """
-    For the amplitude network: let 'feature_extractor_A' be all layers up to but not
-    including amp_model.linear_out. Compute C_A = sum(feats.T @ feats) across train_loader,
-    then H_A = C_A + lambda_A * I, and Σ_A = inv(H_A).
-
-    For the phase network (with N_banks): for each bank i, let phi_i(x) = [t_norm; θ_embed(x)],
-    so collect C_i = sum(phi_i_batch.T @ phi_i_batch), H_i = C_i + lambda_phi * I, Σ_i = inv(H_i).
-
-    Returns:
-      Σ_A:          np.ndarray of shape (d_A, d_A)
-      Σ_phase_list: list of length N_banks, each a (d_phase, d_phase) np.ndarray
-    """
-    C_A = None
-    Σ_phase_list = []
-    # --- Amplitude network ---
-    amp_body_layers = list(amp_model.net_body.children())
-    amp_last_linear = amp_model.linear_out  # nn.Linear
-    feature_extractor_A = nn.Sequential(*amp_body_layers).to(DEVICE)
-    d_A = amp_last_linear.weight.shape[1]
-
-    C_A = np.zeros((d_A, d_A), dtype=np.float64)
-    with torch.no_grad():
-        for x_batch, _ in train_loader:
-            feats = feature_extractor_A(x_batch.to(DEVICE)).cpu().numpy()  # (batch, d_A)
-            C_A += feats.T.dot(feats)
-
-    H_A = C_A + lambda_A * np.eye(d_A, dtype=np.float64)
-    Σ_A = np.linalg.inv(H_A)
-
-    # --- Phase network ---
-    emb_dim = phase_model.theta_embed(torch.zeros(1, 15)).shape[-1]
-    d_phase = emb_dim + 1
-
-    with torch.no_grad():
-        for bank in range(phase_model.N_banks):
-            C_i = np.zeros((d_phase, d_phase), dtype=np.float64)
-            for x_batch, _ in train_loader:
-                batch = x_batch.to(DEVICE)
-                t_b = batch[:, 0:1]                            # (batch,1)
-                θ_embed = phase_model.theta_embed(batch[:, 1:]).cpu().numpy()  # (batch, emb_dim)
-                t_np = t_b.cpu().numpy()                       # (batch,1)
-                phi_i = np.concatenate([t_np, θ_embed], axis=1)  # (batch, d_phase)
-                C_i += phi_i.T.dot(phi_i)
-
-            H_i = C_i + lambda_phi * np.eye(d_phase, dtype=np.float64)
-            Σ_i = np.linalg.inv(H_i)
-            Σ_phase_list.append(Σ_i)
-
-    return Σ_A, Σ_phase_list
-
 
 def generate_pycbc_waveform(params, common_times):
     """
@@ -186,13 +133,13 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     """
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1) SAMPLE PARAMETERS
+    # SAMPLE PARAMETERS
     param_list, thetas = sample_parameters(NUM_SAMPLES)
 
-    # 2) BUILD COMMON TIME GRID
+    # BUILD COMMON TIME GRID
     common_times, N_common = build_common_times(delta_t=DELTA_T, t_before=T_BEFORE, t_after=T_AFTER)
 
-    # 3) GENERATE WAVEFORM CHUNKS (for GWFlatDataset and Laplace)
+    # GENERATE WAVEFORM CHUNKS (for GWFlatDataset and Laplace)
     waveform_chunks = build_waveform_chunks(
         param_list=param_list,
         common_times=common_times,
@@ -204,15 +151,15 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
         psi_fixed=PSI_FIXED,
     )
 
-    # 4) NORMALIZE PARAMETERS
+    # NORMALIZE PARAMETERS
     param_means = thetas.mean(axis=0).astype(np.float32)  # (15,)
     param_stds  = thetas.std(axis=0).astype(np.float32)  # (15,)
     theta_norm_all = ((thetas - param_means) / param_stds).astype(np.float32)
 
-    # 5) PRECOMPUTE time_norm
+    # PRECOMPUTE time_norm
     time_norm = ((2.0 * (common_times + T_BEFORE) / (T_BEFORE + T_AFTER)) - 1.0).astype(np.float32)
 
-    # 6) BUILD FULL DATASET & DATALOADER FOR LAPLACE
+    # BUILD FULL DATASET & DATALOADER FOR LAPLACE
     from src.dataset import GWFlatDataset
     from torch.utils.data import DataLoader, Subset
 
@@ -225,17 +172,17 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     all_indices = list(range(NUM_SAMPLES * N_common))
     train_loader = DataLoader(Subset(dataset, all_indices), batch_size=1024, shuffle=False)
 
-    # 7) LOAD MODELS
+    # LOAD MODELS
     phase_model, amp_model = load_models(checkpoint_dir)
 
-    # 8) COMPUTE LAPLACE COVARIANCES
-    Σ_A, Σ_phase_banks = compute_laplace_hessians(train_loader, phase_model, amp_model)
+    # COMPUTE LAPLACE COVARIANCES
+    sum_A, sum_phase_banks = compute_laplace_hessians(train_loader, phase_model, amp_model)
 
-    # 9) EXTRACT FEATURE EXTRACTOR FOR AMP UNCERTAINTY
+    # EXTRACT FEATURE EXTRACTOR FOR AMP UNCERTAINTY
     amp_body_layers = list(amp_model.net_body.children())
     feature_extractor_A = nn.Sequential(*amp_body_layers).to(DEVICE)
 
-    # 10) INDIVIDUAL WAVEFORM PLOTS & UNCERTAINTY
+    # INDIVIDUAL WAVEFORM PLOTS & UNCERTAINTY
     K = min(num_examples, NUM_SAMPLES)
     indices = np.random.choice(NUM_SAMPLES, K, replace=False)
 
@@ -290,13 +237,13 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
 
         inp_wave_t = torch.from_numpy(inp_wave).to(DEVICE)
 
-        # (c) Predict normalized amplitude & dphi; reconstruct phi_pred
+        # Predict normalized amplitude & dphi; reconstruct phi_pred
         with torch.no_grad():
             A_pred_norm = amp_model(inp_wave_t).cpu().numpy().ravel()   # (N_common,)
             dphi_pred   = phase_model(inp_wave_t[:, 0:1], inp_wave_t[:, 1:]).cpu().numpy().ravel()
         phi_pred = np.cumsum(dphi_pred).astype(np.float32)  # (N_common,)
 
-        # (d) Plot normalized amplitude: true vs. predicted
+        # Plot normalized amplitude: true vs. predicted
         t_full = common_times
         plt.figure(figsize=(10, 4))
         plt.plot(t_full, amp_norm_true, label="True $A_{\\mathrm{norm}}(t)$", linewidth=1)
@@ -310,7 +257,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
         plt.savefig(os.path.join(output_dir, f"amp_compare_{i}.png"))
         plt.close()
 
-        # (e) Plot unwrapped phase: true vs. predicted
+        # Plot unwrapped phase: true vs. predicted
         plt.figure(figsize=(10, 4))
         plt.plot(t_full, phi_true,   label="True $\\phi(t)$", linewidth=1)
         plt.plot(t_full, phi_pred,   label="Predicted $\\widehat{\\phi}(t)$",
@@ -323,38 +270,38 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
         plt.savefig(os.path.join(output_dir, f"phase_compare_{i}.png"))
         plt.close()
 
-        # (f) Compute amplitude uncertainty var_A
+        # Compute amplitude uncertainty var_A
         with torch.no_grad():
             feats_A = feature_extractor_A(inp_wave_t).cpu().numpy()  # (N_common, d_A)
-        var_A = np.einsum('bi,ij,bj->b', feats_A, Σ_A, feats_A)     # (N_common,)
+        var_A = np.einsum('bi,ij,bj->b', feats_A, sum_A, feats_A)     # (N_common,)
 
-        # (g) Compute phase uncertainty var_phi
+        #  Compute phase uncertainty var_phi
         with torch.no_grad():
-            θ_embed_all = phase_model.theta_embed(inp_wave_t[:, 1:]).cpu().numpy()  # (N_common, emb_dim)
+            Theta_embed_all = phase_model.theta_embed(inp_wave_t[:, 1:]).cpu().numpy()  # (N_common, emb_dim)
             t_np = inp_wave[:, 0:1]  # (N_common,1)
 
         var_phi = np.zeros(N_common, dtype=np.float64)
         for b in range(phase_model.N_banks):
-            phi_i_batch = np.concatenate([t_np, θ_embed_all], axis=1)  # (N_common, emb_dim+1)
-            Σ_i = Σ_phase_banks[b]
-            var_i = np.einsum('bi,ij,bj->b', phi_i_batch, Σ_i, phi_i_batch)  # (N_common,)
+            phi_i_batch = np.concatenate([t_np, Theta_embed_all], axis=1)  # (N_common, emb_dim+1)
+            sum_i = sum_phase_banks[b]
+            var_i = np.einsum('bi,ij,bj->b', phi_i_batch, sum_i, phi_i_batch)  # (N_common,)
             var_phi += var_i
 
-        # (h) Propagate to h(t)
+        # Propagate to h(t)
         dhdA   = A_peak * np.cos(phi_true)                              # (N_common,)
         dhdphi = -A_peak * A_pred_norm * np.sin(phi_pred)               # (N_common,)
 
         var_h   = (dhdA**2) * var_A + (dhdphi**2) * var_phi             # (N_common,)
         sigma_h = np.sqrt(var_h)                                        # (N_common,)
 
-        # (i) Trim zeros to plot active region + buffer
+        # Trim zeros to plot active region + buffer
         start_idx, end_idx = trimming_indices(h_true_full, buffer=0.1, delta_t=DELTA_T)
         t_plot      = common_times[start_idx:end_idx]
         h_true_plot = h_true_full[start_idx:end_idx]
         h_pred_plot = A_peak * A_pred_norm[start_idx:end_idx] * np.cos(phi_pred[start_idx:end_idx])
         sigma_plot  = sigma_h[start_idx:end_idx]
 
-        # (j) Plot h(t) ± 2σ
+        # Plot h(t) +- 2sigma
         plt.figure(figsize=(10, 4))
         plt.plot(t_plot,      h_true_plot, color="#000000", label="True $h(t)$", linewidth=1)
         plt.plot(t_plot,      h_pred_plot, color="#1f77b4", label=r"Predicted $\hat{h}(t)$", linewidth=1)
@@ -374,7 +321,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
         plt.savefig(os.path.join(output_dir, f"waveform_uncertainty_{i}.png"))
         plt.close()
 
-        # (k) Percentage‐error summary for this waveform
+        # Percentage‐error summary for this waveform
         abs_errors_1d = np.abs(h_pred_plot - h_true_plot)  # (active_length,)
         perc_errors_1d = 100.0 * abs_errors_1d / (np.abs(h_true_plot) + 1e-30)
 
@@ -389,7 +336,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
         print(f"  95th  %ile: {pct_95:.3f} %")
         print(f"  99th  %ile: {pct_99:.3f} %")
 
-    # 11) POINTWISE ERRORS ACROSS ALL WAVEFORMS & GLOBAL PLOTS/STATISTICS
+    # POINTWISE ERRORS ACROSS ALL WAVEFORMS & GLOBAL PLOTS/STATISTICS
     # Regenerate all true & predicted waveforms, compute errors
     all_errors_list = []
     h_true_array = np.zeros((NUM_SAMPLES, N_common), dtype=np.float32)
@@ -454,7 +401,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
 
     all_errors = np.concatenate(all_errors_list)  # (NUM_SAMPLES * N_common,)
 
-    # 11.1) KDE of errors
+    # KDE of errors
     kde = gaussian_kde(all_errors)
     x_grid = np.linspace(all_errors.min(), all_errors.max(), 1000)
     pdf_vals = kde(x_grid)
@@ -469,7 +416,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     plt.savefig(os.path.join(output_dir, "kde_errors.png"))
     plt.close()
 
-    # 11.2) Empirical CDF of absolute errors
+    # Empirical CDF of absolute errors
     abs_errors = np.abs(all_errors)
     sorted_abs = np.sort(abs_errors)
     cdf = np.linspace(0, 1, len(sorted_abs))
@@ -483,7 +430,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     plt.savefig(os.path.join(output_dir, "cdf_abs_errors.png"))
     plt.close()
 
-    # 11.3) Summary statistics
+    # Summary statistics
     mean_err    = np.mean(all_errors)
     std_err     = np.std(all_errors)
     mae         = np.mean(np.abs(all_errors))
@@ -499,7 +446,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     print(f"  90th percentile error: {pct_90_err:.3e}")
     print(f"  95th percentile error: {pct_95_err:.3e}")
 
-    # 11.4) Plot Signed Error vs. Time for one random sample
+    # Plot Signed Error vs. Time for one random sample
     plt.figure(figsize=(8, 5))
     chosen = np.random.choice(NUM_SAMPLES, size=1, replace=False)
     for idx in chosen:
@@ -514,7 +461,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     plt.savefig(os.path.join(output_dir, "signed_error_random_sample.png"))
     plt.close()
 
-    # 11.5) Plot Mean Absolute Error vs. Time
+    # Plot Mean Absolute Error vs. Time
     abs_errors_2d = np.abs(h_pred_array - h_true_array)  # (NUM_SAMPLES, N_common)
     mae_time      = abs_errors_2d.mean(axis=0)           # (N_common,)
 
@@ -527,7 +474,7 @@ def evaluate(checkpoint_dir: str = "checkpoints", output_dir: str = "plots", num
     plt.savefig(os.path.join(output_dir, "mae_vs_time.png"))
     plt.close()
 
-    # 11.6) Heatmap of Absolute Errors (Samples × Time)
+    # Heatmap of Absolute Errors (Samples × Time)
     plt.figure(figsize=(10, 6))
     plt.imshow(
         abs_errors_2d,

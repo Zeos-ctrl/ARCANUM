@@ -58,13 +58,13 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
 
-    # 1) SAMPLE PARAMETERS
+    # SAMPLE PARAMETERS
     param_list, thetas = sample_parameters(NUM_SAMPLES)
-    # 2) BUILD COMMON TIME GRID
+    # BUILD COMMON TIME GRID
     common_times, N_common = build_common_times(delta_t=DELTA_T, t_before=T_BEFORE, t_after=T_AFTER)
 
     print("Generating waveform chunks...")
-    # 3) GENERATE WAVEFORM CHUNKS
+    # GENERATE WAVEFORM CHUNKS
     waveform_chunks = build_waveform_chunks(
         param_list=param_list,
         common_times=common_times,
@@ -76,16 +76,16 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         psi_fixed=PSI_FIXED,
     )
 
-    # 4) NORMALIZE PARAMETER VECTORS
+    # NORMALIZE PARAMETER VECTORS
     param_means = thetas.mean(axis=0)   # shape (15,)
     param_stds  = thetas.std(axis=0)    # shape (15,)
     theta_norm_all = ((thetas - param_means) / param_stds).astype(np.float32)
 
-    # 5) PRECOMPUTE time_norm (map [–T_BEFORE, +T_AFTER] → [–1, +1])
+    # PRECOMPUTE time_norm (map [–T_BEFORE, +T_AFTER] → [–1, +1])
     time_norm = ((2.0 * (common_times + T_BEFORE) / (T_BEFORE + T_AFTER)) - 1.0).astype(np.float32)
 
     print("Building dataset...")
-    # 6) BUILD DATASET AND DATALOADERS
+    # BUILD DATASET AND DATALOADERS
     dataset = GWFlatDataset(
         waveform_chunks=waveform_chunks,
         theta_norm_all=theta_norm_all,
@@ -115,11 +115,11 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
     val_loader = DataLoader(val_dataset, batch_size=BATCH_SIZE)
 
     print("Creating models...")
-    # 7) INSTANTIATE MODELS & OPTIMIZER
+    # INSTANTIATE MODELS & OPTIMIZER
     phase_model = PhaseDNN_Full(
         param_dim=15,
         time_dim=1,
-        emb_hidden=[256, 256, 256],
+        emb_hidden=[256, 256, 256, 256],
         emb_dim=256,
         phase_hidden=[192]*8,
         N_banks=3,
@@ -151,7 +151,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         weight_decay=1e-4
     )
 
-    # 8) WEIGHT INITIALIZATION
+    # WEIGHT INITIALIZATION
     reinitialize_weights(phase_model)
     reinitialize_weights(amp_model)
 
@@ -277,13 +277,13 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
                 tqdm.write(f"No improvement for {PATIENCE} epochs—stopping at epoch {epoch}.")
                 break
 
-# Load best checkpoint before fine‐tuning
+    # Load best checkpoint before fine‐tuning
     if best_checkpoint:
         phase_model.load_state_dict(best_checkpoint['phase_state'])
         amp_model.load_state_dict(best_checkpoint['amp_state'])
         optimizer.load_state_dict(best_checkpoint['optim_state'])
 
-# 10) FINE‐TUNING WITH REDUCED LR
+    # FINE‐TUNING WITH REDUCED LR
     tqdm.write("Starting fine‐tuning with reduced learning rate…")
     for g in optimizer.param_groups:
         g['lr'] = FINE_TUNE_LR
@@ -382,7 +382,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
 
     tqdm.write("Fine‐tuning complete.")
 
-    # 11) SAVE BEST MODEL WEIGHTS
+    # SAVE BEST MODEL WEIGHTS
     phase_path = os.path.join(checkpoint_dir, "phase_model_best.pth")
     amp_path = os.path.join(checkpoint_dir, "amp_model_best.pth")
     torch.save(phase_model.state_dict(), phase_path)

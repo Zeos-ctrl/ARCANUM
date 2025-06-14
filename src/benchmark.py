@@ -31,25 +31,25 @@ def benchmark(N_waveforms, checkpoint_dir="checkpoints"):
       time_pycbc (float)   : total PyCBC waveform generation time (seconds)
       mae_per_waveform (np.ndarray of shape (N_waveforms,))
     """
-    # 1) Sample N_waveforms random parameter sets
+    # Sample N_waveforms random parameter sets
     param_list, thetas = sample_parameters(N_waveforms)
 
-    # 2) Build common grid (shared by both methods)
+    # Build common grid (shared by both methods)
     common_times, N_common = build_common_times(delta_t=DELTA_T, t_before=T_BEFORE, t_after=T_AFTER)
 
-    # 3) Compute normalization stats from these thetas
+    # Compute normalization stats from these thetas
     param_means = thetas.mean(axis=0).astype(np.float32)   # (15,)
     param_stds  = thetas.std(axis=0).astype(np.float32)    # (15,)
 
-    # 4) Precompute time_norm ∈ [–1, +1]
+    # Precompute time_norm ∈ [–1, +1]
     time_norm = ((2.0 * (common_times + T_BEFORE) / (T_BEFORE + T_AFTER)) - 1.0).astype(np.float32)
 
-    # 5) Load trained models
+    # Load trained models
     phase_model, amp_model = load_models(checkpoint_dir)
     phase_model.to(DEVICE)
     amp_model.to(DEVICE)
 
-    # 6) Time PyCBC generation for all N_waveforms
+    # Time PyCBC generation for all N_waveforms
     pycbc_waveforms = np.zeros((N_waveforms, N_common), dtype=np.float32)
     A_peaks = np.zeros(N_waveforms, dtype=np.float32)
 
@@ -60,8 +60,8 @@ def benchmark(N_waveforms, checkpoint_dir="checkpoints"):
         A_peaks[i] = np.max(np.abs(h_true)) + 1e-30
     time_pycbc = time.time() - start_pycbc
 
-    # 7) Time DNN inference for all N_waveforms (batching)
-    #    Build a single (N_waveforms*N_common, 16) input array
+    # Time DNN inference for all N_waveforms (batching)
+    # Build a single (N_waveforms*N_common, 16) input array
     X = np.zeros((N_waveforms * N_common, 16), dtype=np.float32)
     for i, params in enumerate(param_list):
         (m1, m2,
