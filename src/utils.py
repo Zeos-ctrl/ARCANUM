@@ -1,7 +1,9 @@
 import numpy as np
+import torch
 from scipy.signal import hilbert
 from pycbc.waveform import get_td_waveform
 from pycbc.detector import Detector
+from src.config import DELTA_T
 
 def trimming_indices(h_arr: np.ndarray, buffer: float, delta_t: float) -> (int, int):
     """
@@ -55,7 +57,7 @@ def generate_pycbc_waveform(params: tuple,
      ra, dec,
      d, t0, phi0) = params
 
-    # 1) Generate time‐domain waveform
+    # Generate time‐domain waveform
     hp, hc = get_td_waveform(
         mass1             = m1,
         mass2             = m2,
@@ -78,14 +80,14 @@ def generate_pycbc_waveform(params: tuple,
     h_cross = hc.numpy().astype(np.float32)
     t_plus = hp.sample_times.numpy().astype(np.float32)
 
-    # 2) Detector antenna patterns at merger
+    # Detector antenna patterns at merger
     det = Detector(detector_name)
     Fp, Fx = det.antenna_pattern(ra, dec, psi_fixed, 0.0)
 
-    # 3) Detector‐frame strain on PyCBC grid
+    # Detector‐frame strain on PyCBC grid
     h_det_pycbc = (Fp * h_plus + Fx * h_cross).astype(np.float32)
 
-    # 4) Resample/pad onto `common_times`
+    # Resample/pad onto `common_times`
     h_true_common = np.zeros_like(common_times, dtype=np.float32)
     idxs = np.round((t_plus - common_times[0]) / delta_t).astype(int)
     valid = (idxs >= 0) & (idxs < len(common_times))
@@ -97,14 +99,14 @@ def compute_laplace_hessians(train_loader, phase_model, amp_model, lambda_A=1e-6
     """
     For the amplitude network: let 'feature_extractor_A' be all layers up to but not
     including amp_model.linear_out. Compute C_A = sum(feats.T @ feats) across train_loader,
-    then H_A = C_A + lambda_A * I, and Σ_A = inv(H_A).
+    then H_A = C_A + lambda_A * I, and sum_A = inv(H_A).
 
     For the phase network (with N_banks): for each bank i, let phi_i(x) = [t_norm; θ_embed(x)],
-    so collect C_i = sum(phi_i_batch.T @ phi_i_batch), H_i = C_i + lambda_phi * I, Σ_i = inv(H_i).
+    so collect C_i = sum(phi_i_batch.T @ phi_i_batch), H_i = C_i + lambda_phi * I, sum_i = inv(H_i).
 
     Returns:
-      Σ_A:          np.ndarray of shape (d_A, d_A)
-      Σ_phase_list: list of length N_banks, each a (d_phase, d_phase) np.ndarray
+      sum_A:          np.ndarray of shape (d_A, d_A)
+      sum_phase_list: list of length N_banks, each a (d_phase, d_phase) np.ndarray
     """
     import torch
 
@@ -121,24 +123,55 @@ def compute_laplace_hessians(train_loader, phase_model, amp_model, lambda_A=1e-6
             C_A += feats.T.dot(feats)
 
     H_A = C_A + lambda_A * np.eye(d_A, dtype=np.float64)
-    Σ_A = np.linalg.inv(H_A)
+    sum_A = np.linalg.inv(H_A)
 
     # --- Phase network ---
     emb_dim = phase_model.theta_embed(torch.zeros(1, 15)).shape[-1]
     d_phase = emb_dim + 1
 
-    Σ_phase_list = []
+    sum_phase_list = []
     with torch.no_grad():
         for bank in range(phase_model.N_banks):
             C_i = np.zeros((d_phase, d_phase), dtype=np.float64)
             for x_batch, _ in train_loader:
-                # x_batch[:,0:1] is t_norm; x_batch[:,1:] is θ_norm
+                # x_batch[:,0:1] is t_norm; x_batch[:,1:] is Theta_norm
                 t_b = x_batch[:, 0:1].cpu().numpy()                          # (batch, 1)
-                θ_embed = phase_model.theta_embed(x_batch[:, 1:]).cpu().numpy()  # (batch, emb_dim)
-                phi_i = np.concatenate([t_b, θ_embed], axis=1)               # (batch, d_phase)
+                Theta_embed = phase_model.theta_embed(x_batch[:, 1:]).cpu().numpy()  # (batch, emb_dim)
+                phi_i = np.concatenate([t_b, Theta_embed], axis=1)               # (batch, d_phase)
                 C_i += phi_i.T.dot(phi_i)
             H_i = C_i + lambda_phi * np.eye(d_phase, dtype=np.float64)
-            Σ_i = np.linalg.inv(H_i)
-            Σ_phase_list.append(Σ_i)
+            sum_i = np.linalg.inv(H_i)
+            sum_phase_list.append(Σ_i)
 
-    return Σ_A, Σ_phase_list
+    return sum_A, sum_phase_list
+
+def reconstruct_waveform(
+    model: torch.nn.Module,
+    params_norm: torch.Tensor,  # (N,15)
+    t_phys: torch.Tensor,       # (N,1)
+    A_peak: float
+):
+    """
+    Runs the model and returns:
+      h_pred    : (N,) reconstructed strain
+      A_pred    : (N,) predicted amp
+      phi_pred  : (N,) integrated phase
+      omega_pred: (N,) instantaneous freq
+    """
+    model.eval()
+    with torch.no_grad():
+        A_t, phi_rate_t, omega_t = model(params_norm, t_phys)
+
+    A_pred     = A_t.cpu().numpy().ravel()
+    phi_rate   = phi_rate_t.cpu().numpy().ravel()
+    omega_pred = omega_t.cpu().numpy().ravel()
+
+    # integrate phase
+    phi_pred = np.cumsum(phi_rate) * DELTA_T
+
+    # reconstruct strain
+    h_pred = A_peak * A_pred * np.cos(phi_pred)
+
+    print(f"Strain: {h_pred}, Amp: {A_pred}, Phase: {phi_pred}, Freq:{omega_pred}")
+
+    return h_pred, A_pred, phi_pred, omega_pred

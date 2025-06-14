@@ -37,7 +37,7 @@ def reinitialize_weights(model):
             nn.init.zeros_(m.bias)
 
 def objective(trial):
-    # 1) Sample hyperparameters
+    # Sample hyperparameters
 
     # Learning‐rate choices
     init_lr = trial.suggest_categorical("init_lr", [1e-4, 1e-3, 1e-2])
@@ -86,7 +86,7 @@ def objective(trial):
     idx_amp = trial.suggest_int("amp_hidden_idx", 0, len(amp_hidden_candidates) - 1)
     amp_hidden = amp_hidden_candidates[idx_amp]
 
-    # 2) Generate/prepare data (once per trial)
+    # Generate/prepare data (once per trial)
     param_list, thetas = sample_parameters(NUM_SAMPLES)
     common_times, N_common = build_common_times(
         delta_t=DELTA_T, t_before=T_BEFORE, t_after=T_AFTER
@@ -130,7 +130,7 @@ def objective(trial):
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=batch_size)
 
-    # 3) Instantiate models
+    # Instantiate models
     phase_model = PhaseDNN_Full(
         param_dim=15,
         time_dim=1,
@@ -170,7 +170,7 @@ def objective(trial):
     if os.path.exists(ckpt_path):
         os.remove(ckpt_path)
 
-    # 4) Training loop with early stopping
+    # Training loop with early stopping
     for epoch in range(1, NUM_EPOCHS + 1):
         phase_model.train()
         amp_model.train()
@@ -264,7 +264,7 @@ def objective(trial):
         optimizer.load_state_dict(ckpt["optim"])
         os.remove(ckpt_path)
 
-    # 5) Fine‐tuning
+    # Fine‐tuning
     for g in optimizer.param_groups:
         g["lr"] = fine_tune_lr
 
