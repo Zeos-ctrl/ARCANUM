@@ -1,12 +1,13 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 from scipy.signal import hilbert
 
-
 from src.data_generation import (
-    sample_parameters,
+    sample_parameters_non_spinning,
     build_common_times,
+    build_waveform_chunks,
     compute_engineered_features,
 )
 from src.utils import generate_pycbc_waveform, compute_match
@@ -22,42 +23,48 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
              num_examples: int = 1):
     os.makedirs(output_dir, exist_ok=True)
 
-    # 1) Sample & features
-    param_list, thetas_raw = sample_parameters(NUM_SAMPLES)
+    # Sample raw parameters and compute feature‐stats
+    param_list, thetas_raw = sample_parameters_non_spinning(NUM_SAMPLES)
     thetas_feat = compute_engineered_features(thetas_raw)
     feat_means = thetas_feat.mean(axis=0).astype(np.float32)
     feat_stds  = thetas_feat.std(axis=0).astype(np.float32)
-    feat_stds[feat_stds < 1e-6] = 1.0
 
-    # 2) Time grid
+    # avoid divide‑by‑zero for constant features
+    eps = 1e-6
+    feat_stds[feat_stds < eps] = 1.0
+
+    # Build common time grid
     common_times, N_common = build_common_times(DELTA_T, T_BEFORE, T_AFTER)
     merger_window = (-0.50, 0.1)
 
-    # 3) Predictor
+    # Instantiate the predictor
     predictor = WaveformPredictor(
-        model_checkpoint=os.path.join(checkpoint_dir, "gw_surrogate_final.pth"),
-        param_means=None,
-        param_stds=None,
+        model_checkpoint=os.path.join(checkpoint_dir, "gw_surrogate_final_non_spin.pth"),
+        param_means=None,    # not used
+        param_stds=None,     # not used
         feat_means=feat_means,
         feat_stds=feat_stds
     )
 
-    # 4) Random examples
+    # Pick some random examples
     indices = np.random.choice(NUM_SAMPLES, size=min(num_examples, NUM_SAMPLES), replace=False)
+
     for i in indices:
         theta = np.array(param_list[i], dtype=np.float32)
 
-        # True waveform
+        # True waveform from PyCBC
         h_true = generate_pycbc_waveform(
             theta, common_times, DELTA_T,
             WAVEFORM_NAME, DETECTOR_NAME, PSI_FIXED
         )
         analytic = hilbert(h_true)
-        A_true   = np.abs(analytic)
-        phi_true = np.unwrap(np.angle(analytic))
-        A_peak   = A_true.max() + 1e-30
+        A_true = np.abs(analytic).astype(np.float32)
+        phi_true = np.unwrap(np.angle(analytic)).astype(np.float32)
+        A_peak = A_true.max() + 1e-30
+        A_norm_true = A_true / A_peak
+        omega_true = np.gradient(phi_true, common_times)
 
-        # Prediction
+        # Predict via our wrapper
         times, h_pred = predictor.predict(theta)
         # Scale and center
         h_pred = h_pred - np.mean(h_pred)
@@ -75,11 +82,12 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
         common_times_aligned = common_times - t_true0
         times_aligned        = times        - t_pred0
 
-        analytic_p = hilbert(h_pred)
-        A_pred    = np.abs(analytic_p)
-        phi_pred  = np.unwrap(np.angle(analytic_p))
-        omega_true = np.gradient(phi_true, common_times)
-        omega_pred = np.gradient(phi_pred, times) * (2.0/(T_BEFORE+T_AFTER))
+        analytic_pred = hilbert(h_pred)
+        A_pred = np.abs(analytic_pred)
+        phi_pred = np.unwrap(np.angle(analytic_pred))
+        omega_pred = np.gradient(phi_pred, times)
+        scale_t = 2.0 / (T_BEFORE + T_AFTER)
+        omega_pred = omega_pred * scale_t
 
         # 2×1 Amp/Phase plot
         fig1, (ax_amp, ax_phase) = plt.subplots(2, 1, sharex=True, figsize=(8,10))
@@ -130,7 +138,7 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
 
     qs = [1,2,3,4,5]
     matches = []
-    Mtot = 60.0
+    Mtot = 15.0
     for q in qs:
         m1 = q/(1+q)*Mtot; m2 = 1/(1+q)*Mtot
         theta[0] = m1
@@ -141,7 +149,6 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
         times, h_pred = predictor.predict(theta)
         # normalize
         A_peak = np.abs(hilbert(h_true)).max() + 1e-30
-        h_pred = h_pred - np.mean(h_pred)
         h_pred_scaled = h_pred * A_peak
 
         m = compute_match(h_true, h_pred_scaled, DELTA_T, F_LOWER)
@@ -159,5 +166,6 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
 
     print(f"Saved evaluation plots to {output_dir}")
 
-if __name__=="__main__":
+if __name__ == "__main__":
     evaluate()
+

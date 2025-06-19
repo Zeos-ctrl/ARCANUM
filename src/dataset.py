@@ -42,7 +42,7 @@ class GWFlatDataset(Dataset):
         # Input tensor: [ t_norm[j], theta_norm_all[i, : ] ] → shape (16,)
         t_j = self.time_norm[j]                             # scalar float32
         theta_i = self.theta_norm_all[i, :]                  # (15,)
-        x = np.empty(16, dtype=np.float32)
+        x = np.empty(12, dtype=np.float32)
         x[0] = t_j
         x[1:] = theta_i
         x_tensor = torch.from_numpy(x).to(self.DEVICE)       # (16,)

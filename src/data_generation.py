@@ -87,6 +87,70 @@ def sample_parameters(num_samples):
 
     return param_list, thetas
 
+def sample_parameters_non_spinning(num_samples):
+    """
+    Sample `num_samples` random (m1, m2, spins, extrinsic) parameter sets.
+    Returns:
+      param_list: list of length num_samples, each a 15‐tuple
+                  (m1, m2, S1x, S1y, S1z, S2x, S2y, S2z, incl, ecc, ra, dec, dist, t0, phi0)
+      thetas:     np.ndarray of shape (num_samples, 15) with raw floats
+    """
+    param_list = []
+    thetas = np.zeros((num_samples, 15), dtype=np.float32)
+
+    for i in range(num_samples):
+        # Intrinsic parameters
+        m1 = np.random.uniform(MASS_MIN, MASS_MAX)
+        m2 = np.random.uniform(MASS_MIN, MASS_MAX)
+
+        # 0 Spin vectors and eccentricity
+        S1x = 0
+        S1y = 0
+        S1z = 0
+
+        S2x = 0
+        S2y = 0
+        S2z = 0
+
+        incl = np.random.uniform(INCL_MIN, INCL_MAX)
+        #ecc  = np.random.uniform(ECC_MIN, ECC_MAX)
+        ecc = 0
+
+        # Extrinsic parameters
+        ra  = np.random.uniform(RA_MIN, RA_MAX)
+        dec = np.random.uniform(DEC_MIN, DEC_MAX)
+        psi = PSI_FIXED
+
+        # Distance (log‐uniform)
+        log_d_min = np.log10(DIST_MIN)
+        log_d_max = np.log10(DIST_MAX)
+        d = 10 ** np.random.uniform(log_d_min, log_d_max)
+
+        # Coalescence time and phase
+        t0   = np.random.uniform(COAL_MIN, COAL_MAX)
+        phi0 = np.random.uniform(0.0, 2*np.pi)
+
+        thetas[i, :] = np.array([
+            m1, m2,
+            S1x, S1y, S1z,
+            S2x, S2y, S2z,
+            incl, ecc,
+            ra, dec,
+            d, t0, phi0
+        ], dtype=np.float32)
+
+        param_list.append((
+            m1, m2,
+            S1x, S1y, S1z,
+            S2x, S2y, S2z,
+            incl, ecc,
+            ra, dec,
+            d, t0, phi0
+        ))
+
+    return param_list, thetas
+
+
 
 def build_common_times(delta_t=DELTA_T, t_before=T_BEFORE, t_after=T_AFTER):
     """
@@ -207,3 +271,32 @@ def build_waveform_chunks(param_list, common_times, n_common,
         })
 
     return waveform_chunks
+
+def compute_engineered_features(thetas_raw: np.ndarray) -> np.ndarray:
+    """
+    Input: thetas_raw of shape (N,15) with columns
+      [m1, m2, S1x,S1y,S1z, S2x,S2y,S2z, incl, ecc, ra, dec, dist, t0, phi0]
+    Output: thetas_feat of shape (N, F) with columns
+      [M, eta, chi_eff, chi_p,  incl, ecc, ra, dec, dist, t0, phi0]
+    """
+    N = thetas_raw.shape[0]
+    feats = np.zeros((N, 11), dtype=np.float32)
+    m1 = thetas_raw[:,0]; m2 = thetas_raw[:,1]
+    # 1) chirp mass
+    M  = (m1*m2)**(3/5)/(m1+m2)**(1/5)
+    # 2) symmetric mass ratio
+    eta = (m1*m2)/(m1+m2)**2
+    # 3) effective aligned spin
+    S1z = thetas_raw[:,4];  S2z = thetas_raw[:,7]
+    chi_eff = (m1*S1z + m2*S2z)/(m1+m2)
+    # 4) effective precession spin
+    S1perp = np.hypot(thetas_raw[:,2], thetas_raw[:,3])
+    S2perp = np.hypot(thetas_raw[:,5], thetas_raw[:,6])
+    q = np.minimum(m1,m2)/np.maximum(m1,m2)
+    chi_p = np.maximum( S1perp,
+                       ((3+4*q)/(4+3*q))*S2perp )
+    # 5) copy the remaining extrinsic parameters  incl,ecc,ra,dec,dist,t0,phi0
+    extras = thetas_raw[:, 8:15]  # incl,ecc,ra,dec,dist,t0,phi0
+    feats[:, :4]  = np.vstack([M,eta,chi_eff,chi_p]).T
+    feats[:, 4:]  = extras
+    return feats

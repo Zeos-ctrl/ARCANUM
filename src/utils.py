@@ -1,8 +1,15 @@
 import numpy as np
 import torch
+
 from scipy.signal import hilbert
+from scipy.interpolate import interp1d
+
 from pycbc.waveform import get_td_waveform
 from pycbc.detector import Detector
+from pycbc.filter import overlap
+from pycbc.psd import aLIGOZeroDetHighPower
+from pycbc.types import TimeSeries
+
 from src.config import DELTA_T
 
 def trimming_indices(h_arr: np.ndarray, buffer: float, delta_t: float) -> (int, int):
@@ -95,56 +102,6 @@ def generate_pycbc_waveform(params: tuple,
 
     return h_true_common
 
-def compute_laplace_hessians(train_loader, phase_model, amp_model, lambda_A=1e-6, lambda_phi=1e-6):
-    """
-    For the amplitude network: let 'feature_extractor_A' be all layers up to but not
-    including amp_model.linear_out. Compute C_A = sum(feats.T @ feats) across train_loader,
-    then H_A = C_A + lambda_A * I, and sum_A = inv(H_A).
-
-    For the phase network (with N_banks): for each bank i, let phi_i(x) = [t_norm; θ_embed(x)],
-    so collect C_i = sum(phi_i_batch.T @ phi_i_batch), H_i = C_i + lambda_phi * I, sum_i = inv(H_i).
-
-    Returns:
-      sum_A:          np.ndarray of shape (d_A, d_A)
-      sum_phase_list: list of length N_banks, each a (d_phase, d_phase) np.ndarray
-    """
-    import torch
-
-    # --- Amplitude network ---
-    amp_body_layers = list(amp_model.net_body.children())
-    amp_last_linear = amp_model.linear_out  # nn.Linear
-    feature_extractor_A = torch.nn.Sequential(*amp_body_layers).to(amp_model.linear_out.weight.device)
-    d_A = amp_last_linear.weight.shape[1]
-
-    C_A = np.zeros((d_A, d_A), dtype=np.float64)
-    with torch.no_grad():
-        for x_batch, _ in train_loader:
-            feats = feature_extractor_A(x_batch).cpu().numpy()  # (batch, d_A)
-            C_A += feats.T.dot(feats)
-
-    H_A = C_A + lambda_A * np.eye(d_A, dtype=np.float64)
-    sum_A = np.linalg.inv(H_A)
-
-    # --- Phase network ---
-    emb_dim = phase_model.theta_embed(torch.zeros(1, 15)).shape[-1]
-    d_phase = emb_dim + 1
-
-    sum_phase_list = []
-    with torch.no_grad():
-        for bank in range(phase_model.N_banks):
-            C_i = np.zeros((d_phase, d_phase), dtype=np.float64)
-            for x_batch, _ in train_loader:
-                # x_batch[:,0:1] is t_norm; x_batch[:,1:] is Theta_norm
-                t_b = x_batch[:, 0:1].cpu().numpy()                          # (batch, 1)
-                Theta_embed = phase_model.theta_embed(x_batch[:, 1:]).cpu().numpy()  # (batch, emb_dim)
-                phi_i = np.concatenate([t_b, Theta_embed], axis=1)               # (batch, d_phase)
-                C_i += phi_i.T.dot(phi_i)
-            H_i = C_i + lambda_phi * np.eye(d_phase, dtype=np.float64)
-            sum_i = np.linalg.inv(H_i)
-            sum_phase_list.append(Σ_i)
-
-    return sum_A, sum_phase_list
-
 def reconstruct_waveform(
     model: torch.nn.Module,
     params_norm: torch.Tensor,  # (N,15)
@@ -175,3 +132,31 @@ def reconstruct_waveform(
     print(f"Strain: {h_pred}, Amp: {A_pred}, Phase: {phi_pred}, Freq:{omega_pred}")
 
     return h_pred, A_pred, phi_pred, omega_pred
+
+def compute_match(h1, h2, delta_t, f_lower):
+    """
+    Compute the overlap (match) between two real strains h1,h2:
+      O = max_{t0,phi0} <h1|h2> / sqrt(<h1|h1><h2|h2>)
+    using pycbc.overlap.
+    """
+    # Force double precision
+    h1_d = np.array(h1, dtype=np.float64)
+    h2_d = np.array(h2, dtype=np.float64)
+
+    ts1 = TimeSeries(h1_d, delta_t=delta_t)
+    ts2 = TimeSeries(h2_d, delta_t=delta_t)
+
+    npts    = len(ts1)
+    delta_f = ts1.delta_f
+
+    # Build PSD in double
+    psd = aLIGOZeroDetHighPower(npts, delta_f, low_freq_cutoff=f_lower)
+
+    # Compute overlap (max over time & phase)
+    m = overlap(
+        ts1, ts2,
+        psd=psd,
+        low_frequency_cutoff=f_lower,
+        high_frequency_cutoff=None
+    )
+    return abs(m)
