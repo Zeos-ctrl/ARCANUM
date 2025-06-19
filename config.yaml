@@ -11,13 +11,13 @@ time_window:
 
 sampling_ranges:
   mass_min: 5.0
-  mass_max: 50.0
+  mass_max: 10.0
   spin_mag_min: 0.0
-  spin_mag_max: 0.99
+  spin_mag_max: 0.7
   incl_min: 0.0
   incl_max: 3.141592653589793
   ecc_min: 0.0
-  ecc_max: 0.3
+  ecc_max: 1.0
   ra_min: 0.0
   ra_max: 6.283185307179586
   dec_min: -1.5707963267948966
@@ -29,12 +29,12 @@ sampling_ranges:
 
 training:
   num_samples: 10
-  batch_size: 128
-  num_epochs: 40
-  learning_rate: 0.005
-  patience: 5
-  fine_tune_epochs: 50
-  fine_tune_lr: 0.0005
+  batch_size: 256
+  num_epochs: 100
+  learning_rate: 0.001
+  patience: 10
+  fine_tune_epochs: 20
+  fine_tune_lr: 0.0001
 
 device: "cuda"
 
