@@ -11,7 +11,7 @@ from src.data_generation import (
     compute_engineered_features,
 )
 from src.utils import generate_pycbc_waveform, compute_match
-from src.models import WaveformPredictor
+from src.models import *
 from src.config import (
     DEVICE, DELTA_T, T_BEFORE, T_AFTER,
     NUM_SAMPLES, F_LOWER, WAVEFORM_NAME,
@@ -138,7 +138,7 @@ def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
 
     qs = [1,2,3,4,5]
     matches = []
-    Mtot = 15.0
+    Mtot = 70.0
     for q in qs:
         m1 = q/(1+q)*Mtot; m2 = 1/(1+q)*Mtot
         theta[0] = m1

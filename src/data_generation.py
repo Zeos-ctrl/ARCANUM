@@ -204,10 +204,6 @@ def build_waveform_chunks(param_list, common_times, n_common,
             spin2y            = S2y,
             spin2z            = S2z,
             eccentricity      = ecc,
-            inclination       = incl,
-            distance          = d,
-            coalescence_time  = t0,
-            coalescence_phase = phi0,
             delta_t           = delta_t,
             f_lower           = f_lower,
             approximant       = waveform_name
@@ -216,12 +212,12 @@ def build_waveform_chunks(param_list, common_times, n_common,
         h_cross = hc.numpy().astype(np.float32)
         t_plus = hp.sample_times.numpy().astype(np.float32)
 
-        # 2) Detector projection
+        # Detector projection
         det = Detector(detector_name)
         Fp, Fx = det.antenna_pattern(ra, dec, psi_fixed, 0.0)
         h_det = (Fp * h_plus + Fx * h_cross).astype(np.float32)
 
-        # 3) Convert to time relative to merger, then index on common_times
+        # Convert to time relative to merger, then index on common_times
         t_rel = t_plus - t0
         idxs = np.round((t_rel + T_BEFORE) / delta_t).astype(int)
         valid = (idxs >= 0) & (idxs < n_common)
@@ -238,26 +234,26 @@ def build_waveform_chunks(param_list, common_times, n_common,
         kept_idxs = idxs[valid]
         h_chunk_raw = h_det[valid]
 
-        # 4) Instantaneous amplitude & phase on the chunk
+        # Instantaneous amplitude & phase on the chunk
         analytic = hilbert(h_chunk_raw)
         inst_amp = np.abs(analytic).astype(np.float32)
         inst_phi = np.unwrap(np.angle(analytic)).astype(np.float32)
 
-        # 5) Normalize amplitude by its peak
+        # Normalize amplitude by its peak
         A_peak = inst_amp.max() + 1e-30
         amp_norm_chunk = (inst_amp / A_peak).astype(np.float32)
 
-        # 6) Compute dphi (first element is phi[0], then differences)
+        # Compute dphi (first element is phi[0], then differences)
         dphi_chunk = np.empty_like(inst_phi, dtype=np.float32)
         dphi_chunk[0] = inst_phi[0]
         dphi_chunk[1:] = inst_phi[1:] - inst_phi[:-1]
 
-        # 7) Determine contiguous chunk indices
+        # Determine contiguous chunk indices
         start_idx = int(kept_idxs.min())
         end_idx = int(kept_idxs.max())
         chunk_len = end_idx - start_idx + 1
 
-        # 8) Build full-length arrays and insert normalized values
+        # Build full-length arrays and insert normalized values
         full_amp = np.zeros(chunk_len, dtype=np.float32)
         full_dphi = np.zeros(chunk_len, dtype=np.float32)
         offsets = kept_idxs - start_idx
@@ -275,28 +271,34 @@ def build_waveform_chunks(param_list, common_times, n_common,
 def compute_engineered_features(thetas_raw: np.ndarray) -> np.ndarray:
     """
     Input: thetas_raw of shape (N,15) with columns
-      [m1, m2, S1x,S1y,S1z, S2x,S2y,S2z, incl, ecc, ra, dec, dist, t0, phi0]
-    Output: thetas_feat of shape (N, F) with columns
-      [M, eta, chi_eff, chi_p,  incl, ecc, ra, dec, dist, t0, phi0]
+      [m1, m2, S1x, S1y, S1z, S2x, S2y, S2z, incl, ecc, ra, dec, dist, t0, phi0]
+    Output: feats of shape (N,4) with columns
+      [M, eta, chi_eff, chi_p]
     """
-    N = thetas_raw.shape[0]
-    feats = np.zeros((N, 11), dtype=np.float32)
-    m1 = thetas_raw[:,0]; m2 = thetas_raw[:,1]
-    # 1) chirp mass
-    M  = (m1*m2)**(3/5)/(m1+m2)**(1/5)
-    # 2) symmetric mass ratio
-    eta = (m1*m2)/(m1+m2)**2
-    # 3) effective aligned spin
-    S1z = thetas_raw[:,4];  S2z = thetas_raw[:,7]
-    chi_eff = (m1*S1z + m2*S2z)/(m1+m2)
-    # 4) effective precession spin
-    S1perp = np.hypot(thetas_raw[:,2], thetas_raw[:,3])
-    S2perp = np.hypot(thetas_raw[:,5], thetas_raw[:,6])
-    q = np.minimum(m1,m2)/np.maximum(m1,m2)
-    chi_p = np.maximum( S1perp,
-                       ((3+4*q)/(4+3*q))*S2perp )
-    # 5) copy the remaining extrinsic parameters  incl,ecc,ra,dec,dist,t0,phi0
-    extras = thetas_raw[:, 8:15]  # incl,ecc,ra,dec,dist,t0,phi0
-    feats[:, :4]  = np.vstack([M,eta,chi_eff,chi_p]).T
-    feats[:, 4:]  = extras
+    # Extract masses
+    m1 = thetas_raw[:, 0]
+    m2 = thetas_raw[:, 1]
+
+    # Chirp mass
+    M = (m1 * m2)**(3/5) / (m1 + m2)**(1/5)
+
+    # Symmetric mass ratio
+    eta = (m1 * m2) / (m1 + m2)**2
+
+    # Effective aligned spin
+    S1z = thetas_raw[:, 4]
+    S2z = thetas_raw[:, 7]
+    chi_eff = (m1 * S1z + m2 * S2z) / (m1 + m2)
+
+    # Effective precession spin
+    S1perp = np.hypot(thetas_raw[:, 2], thetas_raw[:, 3])
+    S2perp = np.hypot(thetas_raw[:, 5], thetas_raw[:, 6])
+    q = np.minimum(m1, m2) / np.maximum(m1, m2)
+    chi_p = np.maximum(S1perp, ((3 + 4*q) / (4 + 3*q)) * S2perp)
+
+    # Eccentricity
+    ecc = thetas_raw[:, 9]
+
+    # Stack into (N,4) array
+    feats = np.vstack([M, eta, chi_eff, chi_p, ecc]).T.astype(np.float32)
     return feats

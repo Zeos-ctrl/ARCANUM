@@ -15,48 +15,41 @@ from src.data_generation import (
     compute_engineered_features,
 )
 from src.dataset import GWFlatDataset
-from src.models import MultiHeadGWModel
+from src.models import MultiHeadGWFNO
 from src.power_monitor import PowerMonitor
 from src.utils import generate_pycbc_waveform
 from src.config import *
 
 def apply_curriculum(params_norm: torch.Tensor, phase: int) -> torch.Tensor:
     """
-    Given normalized params (batch,15), zero/scale certain components
-    depending on the curriculum phase (1–4).
-    Indices: spin1x=3, spin1y=4, spin2x=6, spin2y=7, ecc=9.
+    Given normalized params (batch,5) with columns [M, η, χ_eff, χ_p, ecc],
+    zero/scale certain components depending on the curriculum phase (1–4).
     """
     p = params_norm.clone()
+    # columns: 0=M, 1=η, 2=χ_eff, 3=χ_p, 4=ecc
     if phase == 1:
-        # circular & aligned: zero in-plane spin and ecc
-        p[:, 3] = 0.0; p[:, 4] = 0.0
-        p[:, 6] = 0.0; p[:, 7] = 0.0
-        p[:, 9] = 0.0
-
+        # circular & non-spinning: zero spins and ecc
+        p[:, 2] = 0.0  # χ_eff
+        p[:, 3] = 0.0  # χ_p
+        p[:, 4] = 0.0  # ecc
     elif phase == 2:
-        # small ecc up to 0.1, still zero in-plane spin
-        α = 1.0  # full scaling of raw low-ecc
-        p[:, 3] = 0.0; p[:, 4] = 0.0
-        p[:, 6] = 0.0; p[:, 7] = 0.0
-        p[:, 9] = p[:, 9] * α * 0.1
-
+        # introduce small spin & small ecc
+        α_spin = 0.25
+        α_ecc  = 0.10
+        p[:, 2] = p[:, 2] * α_spin
+        p[:, 3] = p[:, 3] * α_spin
+        p[:, 4] = p[:, 4] * α_ecc
     elif phase == 3:
-        # moderate-high ecc (0.1→0.7), still aligned spins
-        α = 1.0
-        p[:, 3] = 0.0; p[:, 4] = 0.0
-        p[:, 6] = 0.0; p[:, 7] = 0.0
-        # linearly map raw ecc in [0,1] → [0.1,0.7]
-        p[:, 9] = 0.1 + 0.6 * p[:, 9]
-
+        # moderate spin & moderate ecc
+        α_spin = 0.5
+        # map ecc [0,1] → [0.1,0.7]
+        p[:, 2] = p[:, 2] * α_spin
+        p[:, 3] = p[:, 3] * α_spin
+        p[:, 4] = 0.1 + 0.6 * p[:, 4]
     elif phase == 4:
-        # full ecc + ramp in-plane spins
-        beta = 1.0
-        p[:, 9] = 0.7 * p[:, 9] / p[:, 9].max().clamp(min=1e-6)
-        p[:, 3] = p[:, 3] * beta
-        p[:, 4] = p[:, 4] * beta
-        p[:, 6] = p[:, 6] * beta
-        p[:, 7] = p[:, 7] * beta
-
+        # full spin & full ecc up to 0.7
+        max_ecc = p[:, 4].max().clamp(min=1e-6)
+        p[:, 4] = 0.7 * p[:, 4] / max_ecc
     return p
 
 def train_and_save(checkpoint_dir: str = "checkpoints"):
@@ -75,22 +68,21 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
             DELTA_T, F_LOWER, WAVEFORM_NAME, DETECTOR_NAME, PSI_FIXED
         )
 
-        # 4) COMPUTE ENGINEERED FEATURES (N×11)
+        # COMPUTE ENGINEERED FEATURES (N×5)
         thetas_feat = compute_engineered_features(thetas_raw)
-        #     → columns: [M, η, χ_eff, χ_p, incl, ecc, ra, dec, dist, t0, φ0]
 
-        # 5) NORMALIZE FEATURES
+        # NORMALIZE FEATURES
         feat_means = thetas_feat.mean(axis=0).astype(np.float32)
         feat_stds  = thetas_feat.std(axis=0).astype(np.float32)
         theta_feat_norm = ((thetas_feat - feat_means)/feat_stds).astype(np.float32)
 
-        # 6) NORMALIZE TIME
+        # NORMALIZE TIME
         time_norm = ((2.0*(common_times + T_BEFORE)/(T_BEFORE + T_AFTER)) - 1.0).astype(np.float32)
 
-        # 7) BUILD DATASET & DATALOADERS
+        # BUILD DATASET & DATALOADERS
         dataset = GWFlatDataset(
             waveform_chunks,
-            theta_feat_norm,    # << now shape (N,11)
+            theta_feat_norm,    # << now shape (N,5)
             time_norm,
             N_common
         )
@@ -117,12 +109,15 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         )
 
         # MODEL & OPTIMIZER
-        model = MultiHeadGWModel(
-            param_dim=theta_feat_norm.shape[1],
-            fourier_K=10,
-            fourier_max_freq=1.0/(2*DELTA_T),
-            hidden_dims=[256,256,256,256],
-            dropout_p=0.2
+        model = MultiHeadGWFNO(
+            param_dim        = theta_feat_norm.shape[1],
+            seq_len          = N_common,
+            fourier_K        = 10,
+            fourier_max_freq = 1.0/(2*DELTA_T),
+            fno_modes        = 16,
+            fno_width        = 128,
+            fno_depth        = 4,
+            dropout_p        = 0.2
         ).to(DEVICE)
         print("=== Model ===\n",model)
         optimizer = optim.AdamW(model.parameters(), lr=LEARNING_RATE, weight_decay=5e-4)
@@ -139,6 +134,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         phase_schedule = [(1,n1), (2,n2), (3,n3), (4,n4)]
 
         best_val, best_state = float('inf'), None
+        print(f"Training on {thetas_feat[0].shape} input parameters")
 
         for phase, n_epochs in phase_schedule:
             print(f"\n=== Curriculum Phase {phase}: {n_epochs} epochs ===")
@@ -158,10 +154,6 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
 
                     # physical time & curriculum params as before…
                     t_phys = ((t_norm+1)/2)*(T_BEFORE+T_AFTER)-T_BEFORE
-                    t0_norm= params[:,9:10]
-                    t0_phys= t0_norm * fs[9] + fm[9]
-                    t_phys = t_phys - t0_phys
-
                     params_curr = apply_curriculum(params, phase)
 
                     # forward
@@ -169,8 +161,8 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
                     dphi_pred = phi_pred
 
                     # **compute each loss component separately**
-                    loss_amp  = F.mse_loss(A_pred,       A_true) * 1.1
-                    loss_phi  = F.mse_loss(dphi_pred,   dphi_true) * 1.1
+                    loss_amp  = F.mse_loss(A_pred,       A_true) * 1
+                    loss_phi  = F.mse_loss(dphi_pred,   dphi_true) * 1
                     loss_freq = F.mse_loss(omega_pred,  dphi_pred) * 1
                     loss = loss_amp + loss_phi + loss_freq
 
