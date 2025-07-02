@@ -7,7 +7,6 @@ with open(_CONFIG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
 
 PYCBC = _cfg["pycbc"]
-TIME_WINDOW = _cfg["time_window"]
 SAMPLING_RANGES = _cfg["sampling_ranges"]
 TRAINING = _cfg["training"]
 CHECKPOINT_DIR = _cfg["paths"]["checkpoint_dir"]
@@ -17,34 +16,22 @@ if torch.cuda.is_available() and torch.cuda.device_count() > 0:
 else:
     DEVICE = torch.device("cpu")
 
-# Convenience shortcuts:
-WAVEFORM_NAME = PYCBC["waveform_name"]
-DELTA_T       = float(PYCBC["delta_t"])
-F_LOWER       = float(PYCBC["f_lower"])
-DETECTOR_NAME = PYCBC["detector_name"]
-PSI_FIXED     = float(PYCBC["psi_fixed"])
+WAVEFORM = PYCBC["waveform_name"] # approximant
+DELTA_T       = float(PYCBC["delta_t"]) # time spacing for get_td_waveform
+F_LOWER       = float(PYCBC["f_lower"]) # starting GW frequency [Hz]
+DETECTOR = PYCBC["detector_name"] # detector generated for
+WAVEFORM_LENGTH     = int(PYCBC["waveform_length"]) # number of time samples per waveform
 
-T_BEFORE      = float(TIME_WINDOW["t_before"])
-T_AFTER       = float(TIME_WINDOW["t_after"])
-
-MASS_MIN      = float(SAMPLING_RANGES["mass_min"])
+MASS_MIN      = float(SAMPLING_RANGES["mass_min"]) # black‐hole masses
 MASS_MAX      = float(SAMPLING_RANGES["mass_max"])
-SPIN_MAG_MIN  = float(SAMPLING_RANGES["spin_mag_min"])
-SPIN_MAG_MAX  = float(SAMPLING_RANGES["spin_mag_max"])
-INCL_MIN      = float(SAMPLING_RANGES["incl_min"])
-INCL_MAX      = float(SAMPLING_RANGES["incl_max"])
-ECC_MIN       = float(SAMPLING_RANGES["ecc_min"])
+SPIN_MIN  = float(SAMPLING_RANGES["spin_mag_min"]) # aligned‐spin chi_z range
+SPIN_MAX  = float(SAMPLING_RANGES["spin_mag_max"])
+INCLINATION_MIN      = float(SAMPLING_RANGES["incl_min"]) # inclination [rad]
+INCLINATION_MAX      = float(SAMPLING_RANGES["incl_max"])
+ECC_MIN       = float(SAMPLING_RANGES["ecc_min"]) # eccentricity range
 ECC_MAX       = float(SAMPLING_RANGES["ecc_max"])
-RA_MIN        = float(SAMPLING_RANGES["ra_min"])
-RA_MAX        = float(SAMPLING_RANGES["ra_max"])
-DEC_MIN       = float(SAMPLING_RANGES["dec_min"])
-DEC_MAX       = float(SAMPLING_RANGES["dec_max"])
-DIST_MIN      = float(SAMPLING_RANGES["dist_min"])
-DIST_MAX      = float(SAMPLING_RANGES["dist_max"])
-COAL_MIN      = float(SAMPLING_RANGES["coal_min"])
-COAL_MAX      = float(SAMPLING_RANGES["coal_max"])
 
-NUM_SAMPLES   = int(TRAINING["num_samples"])
+NUM_SAMPLES   = int(TRAINING["num_samples"]) # number of (m1,m2,chi1z,chi2z,incl,ecc) examples
 BATCH_SIZE    = int(TRAINING["batch_size"])
 NUM_EPOCHS    = int(TRAINING["num_epochs"])
 LEARNING_RATE = float(TRAINING["learning_rate"])

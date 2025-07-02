@@ -1,163 +1,166 @@
+# General utils
 import os
+import logging
 import numpy as np
 import matplotlib.pyplot as plt
-from scipy.signal import hilbert
 
+# PyCBC waveform
+from pycbc.waveform import get_td_waveform
 
-from src.data_generation import (
-    sample_parameters,
-    build_common_times,
-    compute_engineered_features,
-)
-from src.utils import generate_pycbc_waveform, compute_match
-from src.models import WaveformPredictor
-from src.config import (
-    DEVICE, DELTA_T, T_BEFORE, T_AFTER,
-    NUM_SAMPLES, F_LOWER, WAVEFORM_NAME,
-    DETECTOR_NAME, PSI_FIXED, CHECKPOINT_DIR
-)
+# Libraries
+from src.config import *
+from src.dataset import generate_data
+from src.utils import compute_match, WaveformPredictor
 
-def evaluate(checkpoint_dir: str = CHECKPOINT_DIR,
-             output_dir: str = "plots",
-             num_examples: int = 1):
+logger = logging.getLogger(__name__)
+
+def evaluate():
+    logger.info("Starting waveform evaluation and visualization...")
+    pred = WaveformPredictor("checkpoints", device=DEVICE)
+    data = generate_data()
+
+    logger.debug("Dataset generated. Selecting random samples for plotting.")
+    K = 3
+    indices = np.random.choice(NUM_SAMPLES, K, replace=False)
+    logger.debug(f"Selected indices: {indices.tolist()}")
+
+    _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
+    time = data.time_unscaled
+
+    for row, i in enumerate(indices):
+        m1, m2, c1z, c2z, incl, ecc = data.thetas[i]
+        logger.debug(f"Sample {i}: m1={m1}, m2={m2}, spin1z={c1z}, spin2z={c2z}, incl={incl}, ecc={ecc}")
+
+        A_peak = data.A_peaks[i]
+        amp_true = data.amp_norm[i]
+        phi_true = data.phi_unwrap[i]
+
+        t_norm, amp_pred_norm, phi_pred = pred.predict(m1, m2, c1z, c2z, incl, ecc)
+
+        h_true = A_peak * amp_true * np.cos(phi_true)
+        h_pred = A_peak * amp_pred_norm * np.cos(phi_pred)
+
+        A_true = A_peak * amp_true
+        A_pred = A_peak * amp_pred_norm
+
+        # Strain
+        ax = axs[row, 0]
+        ax.plot(time, h_true, label="True $h_+(t)$", linewidth=1)
+        ax.plot(time, h_pred, "--", label="Predicted $h_+(t)$", linewidth=1)
+        if row == 0: ax.set_title("Strain")
+        ax.set_ylabel("Strain")
+        ax.legend(loc="upper right")
+
+        # Amplitude
+        ax = axs[row, 1]
+        ax.plot(time, A_true, label="True Amplitude", linewidth=1)
+        ax.plot(time, A_pred, "--", label="Predicted Amplitude", linewidth=1)
+        if row == 0: ax.set_title("Amplitude")
+        ax.set_ylabel("Amplitude")
+        ax.legend(loc="upper right")
+
+        # Phase
+        ax = axs[row, 2]
+        ax.plot(time, phi_true, label="True Phase", linewidth=1)
+        ax.plot(time, phi_pred, "--", label="Predicted Phase", linewidth=1)
+        if row == 0: ax.set_title("Phase")
+        ax.set_ylabel("Phase [rad]")
+        ax.legend(loc="upper right")
+
+    for ax in axs[-1, :]:
+        ax.set_xlabel("Time [s]")
+
+    plt.tight_layout()
+    output_dir = "plots"
     os.makedirs(output_dir, exist_ok=True)
+    out_file = os.path.join(output_dir, "waveform_plots.png")
+    plt.savefig(out_file)
+    logger.info(f"Saved waveform plots to {out_file}")
 
-    # 1) Sample & features
-    param_list, thetas_raw = sample_parameters(NUM_SAMPLES)
-    thetas_feat = compute_engineered_features(thetas_raw)
-    feat_means = thetas_feat.mean(axis=0).astype(np.float32)
-    feat_stds  = thetas_feat.std(axis=0).astype(np.float32)
-    feat_stds[feat_stds < 1e-6] = 1.0
 
-    # 2) Time grid
-    common_times, N_common = build_common_times(DELTA_T, T_BEFORE, T_AFTER)
-    merger_window = (-0.50, 0.1)
+def cross_correlation_fixed_q(
+    q_list=(1.0, 1.5, 2.0, 2.5),
+    chi1z=0.0, chi2z=0.0,
+    incl=0.0, ecc=0.0
+):
+    logger.info("Running waveform cross-correlation vs mass ratio q.")
+    plot_dir = "plots/cross_correlation"
+    os.makedirs(plot_dir, exist_ok=True)
 
-    # 3) Predictor
-    predictor = WaveformPredictor(
-        model_checkpoint=os.path.join(checkpoint_dir, "gw_surrogate_final.pth"),
-        param_means=None,
-        param_stds=None,
-        feat_means=feat_means,
-        feat_stds=feat_stds
+    pred = WaveformPredictor("checkpoints", device=DEVICE)
+    qs, matches = [], []
+
+    for q in q_list:
+        m1 = MASS_MIN
+        m2 = min(q * m1, MASS_MAX)
+        logger.debug(f"Evaluating q={q:.2f}: m1={m1}, m2={m2}")
+
+        hp, _ = get_td_waveform(
+            mass1=m1, mass2=m2,
+            spin1z=chi1z, spin2z=chi2z,
+            inclination=incl, eccentricity=ecc,
+            delta_t=DELTA_T, f_lower=F_LOWER,
+            approximant=WAVEFORM
+        )
+        h_plus = hp.numpy()
+        if len(h_plus) >= WAVEFORM_LENGTH:
+            h_true = h_plus[-WAVEFORM_LENGTH:]
+        else:
+            pad = WAVEFORM_LENGTH - len(h_plus)
+            h_true = np.pad(h_plus, (pad, 0), mode='constant')
+
+        t_norm, amp_pred_n, phi_pred = pred.predict(m1, m2, chi1z, chi2z, incl, ecc)
+
+        A_peak = np.max(np.abs(h_true)) + 1e-30
+        h_pred = A_peak * amp_pred_n * np.cos(phi_pred)
+
+        match = compute_match(h_true, h_pred)
+        logger.debug(f"Match for q={q:.2f}: {match:.4f}")
+        qs.append(q)
+        matches.append(match)
+
+        fname = os.path.join(plot_dir, f"prediction_vs_actual_q={q:.1f}.png")
+        plt.figure(figsize=(16, 8))
+        plt.plot(t_norm, h_true, label="Actual", linewidth=1)
+        plt.plot(t_norm, h_pred, label="Prediction", linestyle='--', linewidth=1)
+        plt.xlabel("Normalized time")
+        plt.ylabel("Strain")
+        plt.title(f"Prediction vs Actual  q={q:.1f}")
+        plt.legend()
+        plt.tight_layout()
+        plt.savefig(fname)
+        plt.close()
+        logger.info(f"Saved waveform comparison plot: {fname}")
+
+    qs = np.array(qs)
+    matches = np.array(matches)
+
+    plt.figure(figsize=(16, 8))
+    plt.scatter(qs, matches)
+    plt.xlabel(r'Mass ratio $q = m_2/m_1$')
+    plt.xticks(np.arange(min(qs) - 1, max(qs) + 1, 0.5))
+    plt.ylabel('Match')
+    plt.ylim(0, 1)
+    plt.title('Waveform Match vs Mass Ratio')
+    plt.grid(True)
+    plt.tight_layout()
+    match_plot_path = os.path.join(plot_dir, "cross_correlation_fixed_q.png")
+    plt.savefig(match_plot_path)
+    logger.info(f"Saved match vs mass ratio plot: {match_plot_path}")
+
+
+if __name__ == "__main__":
+    # Logging
+    os.makedirs("logs", exist_ok=True)
+
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("logs/evaluation.log", mode='a'),
+        ]
     )
 
-    # 4) Random examples
-    indices = np.random.choice(NUM_SAMPLES, size=min(num_examples, NUM_SAMPLES), replace=False)
-    for i in indices:
-        theta = np.array(param_list[i], dtype=np.float32)
-
-        # True waveform
-        h_true = generate_pycbc_waveform(
-            theta, common_times, DELTA_T,
-            WAVEFORM_NAME, DETECTOR_NAME, PSI_FIXED
-        )
-        analytic = hilbert(h_true)
-        A_true   = np.abs(analytic)
-        phi_true = np.unwrap(np.angle(analytic))
-        A_peak   = A_true.max() + 1e-30
-
-        # Prediction
-        times, h_pred = predictor.predict(theta)
-        # Scale and center
-        h_pred = h_pred - np.mean(h_pred)
-        h_pred = h_pred * A_peak
-
-        # true peak index and time
-        idx_true = np.argmax(np.abs(h_true))
-        t_true0  = common_times[idx_true]
-
-        # pred peak
-        idx_pred = np.argmax(np.abs(h_pred))
-        t_pred0  = times[idx_pred]
-
-        # shift both time arrays so merger lines up at zero
-        common_times_aligned = common_times - t_true0
-        times_aligned        = times        - t_pred0
-
-        analytic_p = hilbert(h_pred)
-        A_pred    = np.abs(analytic_p)
-        phi_pred  = np.unwrap(np.angle(analytic_p))
-        omega_true = np.gradient(phi_true, common_times)
-        omega_pred = np.gradient(phi_pred, times) * (2.0/(T_BEFORE+T_AFTER))
-
-        # 2×1 Amp/Phase plot
-        fig1, (ax_amp, ax_phase) = plt.subplots(2, 1, sharex=True, figsize=(8,10))
-        ax_amp.plot(common_times_aligned, A_true/A_peak, label="True")
-        ax_amp.plot(times_aligned, A_pred/A_pred.max(), label="Pred")
-        ax_amp.set_ylabel("Norm Amp"); ax_amp.legend(); ax_amp.set_title("Amplitude")
-        ax_amp.grid(True)
-
-        ax_phase.plot(common_times_aligned, phi_true, label="True")
-        ax_phase.plot(times_aligned, phi_pred, label="Pred")
-        ax_phase.set_ylabel("Phase [rad]"); ax_phase.set_title("Phase")
-        ax_phase.grid(True); ax_phase.legend()
-
-        fig1.savefig(os.path.join(output_dir, f"amp_phase_{i}.png"))
-        plt.close(fig1)
-
-        # 1×2 waveform + zoom
-        fig2, (ax_full, ax_zoom) = plt.subplots(1, 2,
-            figsize=(16,8),
-            gridspec_kw={'width_ratios':[2,1]}
-        )
-        ax_full.plot(common_times_aligned, h_true, lw=1.5, label="True")
-        ax_full.plot(times_aligned, h_pred, '--', label="Pred")
-        ax_full.set_xlabel("Time [s]"); ax_full.set_ylabel("h(t)")
-        ax_full.set_title("Full Waveform"); ax_full.grid(True); ax_full.legend()
-
-        t0,t1 = merger_window
-        mask = (common_times_aligned>=merger_window[0]) & (common_times_aligned<=merger_window[1])
-        ax_zoom.plot(common_times_aligned[mask], h_true[mask], lw=1.5)
-        mask2 = (times_aligned>=merger_window[0]) & (times_aligned<=merger_window[1])
-        ax_zoom.plot(times_aligned[mask2], h_pred[mask2], '--')
-        ax_zoom.set_xlabel("Time [s]"); ax_zoom.set_title("Zoom: Merger")
-        ax_zoom.grid(True)
-
-        # unpack masses and compute chi_eff
-        m1, m2 = theta[0], theta[1]
-        S1z, S2z = theta[4], theta[7]
-        chi_eff = (m1*S1z + m2*S2z) / (m1 + m2)
-
-        fig2.suptitle(
-            rf"$m_1={m1:.1f}\,M_\odot,\; m_2={m2:.1f}\,M_\odot,\; "
-            rf"\chi_\mathrm{{eff}}={chi_eff:.3f}$",
-            fontsize=16
-        )
-
-        fig2.savefig(os.path.join(output_dir, f"waveform_{i}.png"))
-        plt.close(fig2)
-
-    qs = [1,2,3,4,5]
-    matches = []
-    Mtot = 60.0
-    for q in qs:
-        m1 = q/(1+q)*Mtot; m2 = 1/(1+q)*Mtot
-        theta[0] = m1
-        theta[1] = m2
-
-        h_true = generate_pycbc_waveform(theta, common_times, DELTA_T,
-                                         WAVEFORM_NAME, DETECTOR_NAME, PSI_FIXED)
-        times, h_pred = predictor.predict(theta)
-        # normalize
-        A_peak = np.abs(hilbert(h_true)).max() + 1e-30
-        h_pred = h_pred - np.mean(h_pred)
-        h_pred_scaled = h_pred * A_peak
-
-        m = compute_match(h_true, h_pred_scaled, DELTA_T, F_LOWER)
-        matches.append(m)
-        print(f"q={q} → match={m:.5f}")
-
-    plt.figure(figsize=(16,8))
-    plt.scatter(qs, matches)
-    plt.xlabel("Mass ratio $q$")
-    plt.ylabel("Match")
-    plt.title("Surrogate vs PyCBC match")
-    plt.grid(True)
-    plt.savefig(os.path.join(output_dir,"match_vs_q.png"))
-    plt.close()
-
-    print(f"Saved evaluation plots to {output_dir}")
-
-if __name__=="__main__":
     evaluate()
+    cross_correlation_fixed_q()
