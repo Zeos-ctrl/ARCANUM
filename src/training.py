@@ -62,9 +62,6 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
 
         logger.info("Phase and amplitude models instantiated.")
 
-        print("===PHASE MODEL===\n", phase_model)
-        print("===AMP MODEL===\n", amp_model)
-
         optimizer = optim.Adam(
             list(phase_model.parameters()) + list(amp_model.parameters()),
             lr = LEARNING_RATE
@@ -155,7 +152,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
             else:
                 wait += 1
                 if wait >= PATIENCE:
-                    print(f"→ Early stopping at epoch {epoch}: no improvement for {PATIENCE} epochs")
+                    logger.info(f"→ Early stopping at epoch {epoch}: no improvement for {PATIENCE} epochs")
                     break
 
             # --- Log epoch metrics ---

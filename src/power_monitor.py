@@ -11,11 +11,9 @@ try:
     pynvml.nvmlInit()
     NVML_AVAILABLE = True
     _handle = pynvml.nvmlDeviceGetHandleByIndex(0)
-    logging.info("[PowerMonitor] NVIDIA GPU detected via pynvml.")
 except ImportError:
     NVML_AVAILABLE = False
     _handle = None
-    logging.warning("[PowerMonitor] pynvml not available, NVIDIA monitoring disabled.")
 
 def read_amd_power() -> Optional[float]:
     """
