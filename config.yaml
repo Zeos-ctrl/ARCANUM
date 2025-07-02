@@ -1,39 +1,27 @@
 pycbc:
-  waveform_name: "IMRPhenomPv2"
+  waveform_name: "SEOBNRv4"
   delta_t: 0.00024414062   # 1/4096
   f_lower: 20.0
   detector_name: "H1"
-  psi_fixed: 0.0
-
-time_window:
-  t_before: 8.0
-  t_after: 1.0
+  waveform_length: 1024
 
 sampling_ranges:
-  mass_min: 5.0
-  mass_max: 10.0
-  spin_mag_min: 0.0
-  spin_mag_max: 0.7
+  mass_min: 20.0
+  mass_max: 50.0
+  spin_mag_min: -0.99
+  spin_mag_max: 0.99
   incl_min: 0.0
   incl_max: 3.141592653589793
   ecc_min: 0.0
-  ecc_max: 1.0
-  ra_min: 0.0
-  ra_max: 6.283185307179586
-  dec_min: -1.5707963267948966
-  dec_max: 1.5707963267948966
-  dist_min: 10.0
-  dist_max: 2000.0
-  coal_min: -0.5
-  coal_max: 0.5
+  ecc_max: 0.3
 
 training:
   num_samples: 10
   batch_size: 256
   num_epochs: 100
   learning_rate: 0.001
-  patience: 10
-  fine_tune_epochs: 20
+  patience: 50
+  fine_tune_epochs: 50
   fine_tune_lr: 0.0001
 
 device: "cuda"

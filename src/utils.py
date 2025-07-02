@@ -1,162 +1,111 @@
-import numpy as np
+import os
+import json
 import torch
+import logging
+import numpy as np
 
-from scipy.signal import hilbert
-from scipy.interpolate import interp1d
+from src.model import *
+from src.config import *
 
-from pycbc.waveform import get_td_waveform
-from pycbc.detector import Detector
-from pycbc.filter import overlap
-from pycbc.psd import aLIGOZeroDetHighPower
-from pycbc.types import TimeSeries
+def save_checkpoint(checkpoint_dir, amp_model, phase_model,
+                    param_means, param_stds, t_norm_array):
+    logging.info(f"Saving checkpoint to '{checkpoint_dir}'")
+    os.makedirs(checkpoint_dir, exist_ok=True)
 
-from src.config import DELTA_T
+    # Model weights
+    torch.save(amp_model.state_dict(),
+               os.path.join(checkpoint_dir, "amp_model.pt"))
+    torch.save(phase_model.state_dict(),
+               os.path.join(checkpoint_dir, "phase_model.pt"))
+    logging.debug("Saved model weights.")
 
-def trimming_indices(h_arr: np.ndarray, buffer: float, delta_t: float) -> (int, int):
-    """
-    Given a 1D strain array `h_arr` sampled on a uniform time grid with spacing `delta_t`,
-    find the first and last nonzero‐like sample indices, then extend by `buffer` seconds
-    on each side (clamped to array bounds).
-    Returns (start_idx, end_idx), such that h_arr[start_idx:end_idx] covers the active region.
-    """
-    nonzero = np.where(np.abs(h_arr) > 1e-25)[0]
-    if len(nonzero) == 0:
-        return 0, len(h_arr)
-    buffer_idx = int(buffer / delta_t)
-    start_idx = max(nonzero[0] - buffer_idx, 0)
-    end_idx = min(nonzero[-1] + buffer_idx + 1, len(h_arr))  # +1 so slice is inclusive
-    return start_idx, end_idx
+    # Normalization stats & constants
+    np.save(os.path.join(checkpoint_dir, "param_means.npy"), param_means)
+    np.save(os.path.join(checkpoint_dir, "param_stds.npy"),  param_stds)
+    np.save(os.path.join(checkpoint_dir, "t_norm_array.npy"), t_norm_array)
+    logging.debug("Saved normalization stats and constants.")
 
-def compute_param_stats(thetas: np.ndarray) -> (np.ndarray, np.ndarray):
-    """
-    Given `thetas` of shape (num_samples, 15), compute per‐column mean and stddev.
-    Returns (means, stds), each of shape (15,).
-    """
-    means = thetas.mean(axis=0)
-    stds = thetas.std(axis=0)
-    return means.astype(np.float32), stds.astype(np.float32)
+    # Save metadata JSON
+    meta = {
+        "waveform_length": WAVEFORM_LENGTH,
+        "delta_t": DELTA_T,
+        "device": str(DEVICE)
+    }
+    with open(os.path.join(checkpoint_dir, "meta.json"), "w") as f:
+        json.dump(meta, f)
+    logging.info("Saved metadata JSON.")
 
-def normalize_theta(theta: np.ndarray, means: np.ndarray, stds: np.ndarray) -> np.ndarray:
-    """
-    Given a single raw parameter vector `theta` (shape (15,)) or an array of them
-    (shape (N, 15)), returns normalized values (same shape) via (theta - means) / stds.
-    """
-    return ((theta - means) / stds).astype(np.float32)
+class WaveformPredictor:
+    def __init__(self, checkpoint_dir, device="cpu"):
+        self.logger = logging.getLogger(self.__class__.__name__)
+        self.logger.info(f"Initializing WaveformPredictor from checkpoint '{checkpoint_dir}'")
 
-def generate_pycbc_waveform(params: tuple,
-                            common_times: np.ndarray,
-                            delta_t: float,
-                            waveform_name: str,
-                            detector_name: str,
-                            psi_fixed: float) -> np.ndarray:
-    """
-    Given a 15‐tuple `params = (m1,m2,S1x,S1y,S1z,S2x,S2y,S2z,incl,ecc,ra,dec,dist,t0,phi0)`,
-    generates the plus/cross polarizations via PyCBC, projects onto the detector,
-    and resamples/pads onto the fixed `common_times` grid.
+        self.device = torch.device(device)
 
-    Returns:
-      h_true_common: np.ndarray of length len(common_times)
-    """
-    (m1, m2,
-     S1x, S1y, S1z,
-     S2x, S2y, S2z,
-     incl, ecc,
-     ra, dec,
-     d, t0, phi0) = params
+        # Load normalization
+        self.param_means    = np.load(f"{checkpoint_dir}/param_means.npy")
+        self.param_stds     = np.load(f"{checkpoint_dir}/param_stds.npy")
+        self.t_norm_array   = np.load(f"{checkpoint_dir}/t_norm_array.npy")
+        meta_path = f"{checkpoint_dir}/meta.json"
+        if os.path.exists(meta_path):
+            with open(meta_path) as f:
+                meta = json.load(f)
+            self.waveform_length = meta["waveform_length"]
+            self.delta_t         = meta["delta_t"]
+            self.logger.debug(f"Loaded meta: waveform_length={self.waveform_length}, delta_t={self.delta_t}")
+        else:
+            self.waveform_length = YOUR_DEFAULT
+            self.delta_t         = YOUR_DEFAULT
+            self.logger.warning("Meta file missing, using default waveform_length and delta_t")
 
-    # Generate time‐domain waveform
-    hp, hc = get_td_waveform(
-        mass1             = m1,
-        mass2             = m2,
-        spin1x            = S1x,
-        spin1y            = S1y,
-        spin1z            = S1z,
-        spin2x            = S2x,
-        spin2y            = S2y,
-        spin2z            = S2z,
-        eccentricity      = ecc,
-        inclination       = incl,
-        distance          = d,
-        coalescence_time  = t0,
-        coalescence_phase = phi0,
-        delta_t           = delta_t,
-        f_lower           = 20.0,
-        approximant       = waveform_name
-    )
-    h_plus = hp.numpy().astype(np.float32)
-    h_cross = hc.numpy().astype(np.float32)
-    t_plus = hp.sample_times.numpy().astype(np.float32)
+        # Build models (must match architecture used in training)
+        self.amp_model = AmplitudeNet(in_dim=7, hidden_dims=[128,128,128])
+        self.phase_model = PhaseDNN_Full(
+            param_dim=6, time_dim=1,
+            emb_hidden=[64,64],
+            phase_hidden=[128,128,128,128],
+            N_banks=1
+        )
 
-    # Detector antenna patterns at merger
-    det = Detector(detector_name)
-    Fp, Fx = det.antenna_pattern(ra, dec, psi_fixed, 0.0)
+        # Load weights
+        self.amp_model.load_state_dict(
+            torch.load(f"{checkpoint_dir}/amp_model.pt", map_location=self.device)
+        )
+        self.phase_model.load_state_dict(
+            torch.load(f"{checkpoint_dir}/phase_model.pt", map_location=self.device)
+        )
+        self.amp_model.to(self.device).eval()
+        self.phase_model.to(self.device).eval()
+        self.logger.info("Models loaded and set to eval mode.")
 
-    # Detector‐frame strain on PyCBC grid
-    h_det_pycbc = (Fp * h_plus + Fx * h_cross).astype(np.float32)
+    def _normalize_params(self, raw_params):
+        """raw_params: array-like of shape (6,)"""
+        return (raw_params - self.param_means) / self.param_stds
 
-    # Resample/pad onto `common_times`
-    h_true_common = np.zeros_like(common_times, dtype=np.float32)
-    idxs = np.round((t_plus - common_times[0]) / delta_t).astype(int)
-    valid = (idxs >= 0) & (idxs < len(common_times))
-    h_true_common[idxs[valid]] = h_det_pycbc[valid]
+    def predict(self, m1, m2, chi1z, chi2z, incl, ecc):
+        self.logger.debug(f"Predict called with params: m1={m1}, m2={m2}, chi1z={chi1z}, chi2z={chi2z}, incl={incl}, ecc={ecc}")
+        # 1. Normalize and build input tensor of shape (L,7)
+        theta = np.array([m1,m2,chi1z,chi2z,incl,ecc])
+        theta_n = self._normalize_params(theta)
+        L = self.waveform_length
 
-    return h_true_common
+        # Replicate params across time steps
+        t_n = self.t_norm_array  # shape (L,)
+        params_grid = np.tile(theta_n, (L,1))  # (L,6)
+        inp = np.concatenate([t_n[:,None], params_grid], axis=1).astype(np.float32)
 
-def reconstruct_waveform(
-    model: torch.nn.Module,
-    params_norm: torch.Tensor,  # (N,15)
-    t_phys: torch.Tensor,       # (N,1)
-    A_peak: float
-):
-    """
-    Runs the model and returns:
-      h_pred    : (N,) reconstructed strain
-      A_pred    : (N,) predicted amp
-      phi_pred  : (N,) integrated phase
-      omega_pred: (N,) instantaneous freq
-    """
-    model.eval()
-    with torch.no_grad():
-        A_t, phi_rate_t, omega_t = model(params_norm, t_phys)
-
-    A_pred     = A_t.cpu().numpy().ravel()
-    phi_rate   = phi_rate_t.cpu().numpy().ravel()
-    omega_pred = omega_t.cpu().numpy().ravel()
-
-    # integrate phase
-    phi_pred = np.cumsum(phi_rate) * DELTA_T
-
-    # reconstruct strain
-    h_pred = A_peak * A_pred * np.cos(phi_pred)
-
-    print(f"Strain: {h_pred}, Amp: {A_pred}, Phase: {phi_pred}, Freq:{omega_pred}")
-
-    return h_pred, A_pred, phi_pred, omega_pred
-
-def compute_match(h1, h2, delta_t, f_lower):
-    """
-    Compute the overlap (match) between two real strains h1,h2:
-      O = max_{t0,phi0} <h1|h2> / sqrt(<h1|h1><h2|h2>)
-    using pycbc.overlap.
-    """
-    # Force double precision
-    h1_d = np.array(h1, dtype=np.float64)
-    h2_d = np.array(h2, dtype=np.float64)
-
-    ts1 = TimeSeries(h1_d, delta_t=delta_t)
-    ts2 = TimeSeries(h2_d, delta_t=delta_t)
-
-    npts    = len(ts1)
-    delta_f = ts1.delta_f
-
-    # Build PSD in double
-    psd = aLIGOZeroDetHighPower(npts, delta_f, low_freq_cutoff=f_lower)
-
-    # Compute overlap (max over time & phase)
-    m = overlap(
-        ts1, ts2,
-        psd=psd,
-        low_frequency_cutoff=f_lower,
-        high_frequency_cutoff=None
-    )
-    return abs(m)
+        # 2. Predict
+        with torch.no_grad():
+            inp_t = torch.from_numpy(inp).to(self.device)
+            amp_pred_n = (
+                self.amp_model(inp_t)
+                .cpu().numpy()
+                .ravel()
+            )
+            phi_pred = (
+                self.phase_model(inp_t[:,:1], inp_t[:,1:])
+                .cpu().numpy()
+                .ravel()
+            )
+        self.logger.debug("Prediction completed.")
+        return self.t_norm_array, amp_pred_n, phi_pred
