@@ -4,6 +4,8 @@ import subprocess
 from typing import List, Optional
 import logging
 
+logger = logging.getLogger(__name__)
+
 try:
     import pynvml
     pynvml.nvmlInit()
