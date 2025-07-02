@@ -7,9 +7,11 @@ import numpy as np
 from src.model import *
 from src.config import *
 
+logger = logging.getLogger(__name__)
+
 def save_checkpoint(checkpoint_dir, amp_model, phase_model,
                     param_means, param_stds, t_norm_array):
-    logging.info(f"Saving checkpoint to '{checkpoint_dir}'")
+    logger.info(f"Saving checkpoint to '{checkpoint_dir}'")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
     # Model weights
@@ -17,13 +19,13 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model,
                os.path.join(checkpoint_dir, "amp_model.pt"))
     torch.save(phase_model.state_dict(),
                os.path.join(checkpoint_dir, "phase_model.pt"))
-    logging.debug("Saved model weights.")
+    logger.debug("Saved model weights.")
 
     # Normalization stats & constants
     np.save(os.path.join(checkpoint_dir, "param_means.npy"), param_means)
     np.save(os.path.join(checkpoint_dir, "param_stds.npy"),  param_stds)
     np.save(os.path.join(checkpoint_dir, "t_norm_array.npy"), t_norm_array)
-    logging.debug("Saved normalization stats and constants.")
+    logger.debug("Saved normalization stats and constants.")
 
     # Save metadata JSON
     meta = {
@@ -33,7 +35,22 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model,
     }
     with open(os.path.join(checkpoint_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
-    logging.info("Saved metadata JSON.")
+    logger.info("Saved metadata JSON.")
+
+def compute_match(h_true, h_pred):
+    """
+    Compute the normalized cross‑correlation match between two 1D arrays.
+    Returns a scalar in [0,1].
+    """
+    logger.info("Computing waveform match...")
+    # zero‑mean
+    ht = h_true - np.mean(h_true)
+    hp = h_pred - np.mean(h_pred)
+    # full cross‑correlation
+    corr    = np.correlate(ht, hp, mode="full")
+    max_corr= np.max(corr)
+    norm    = np.sqrt(np.dot(ht, ht) * np.dot(hp, hp))
+    return max_corr / norm
 
 class WaveformPredictor:
     def __init__(self, checkpoint_dir, device="cpu"):

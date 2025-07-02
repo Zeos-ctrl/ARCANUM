@@ -18,8 +18,9 @@ from src.dataset import generate_data
 from src.power_monitor import PowerMonitor
 from src.model import PhaseDNN_Full, AmplitudeNet
 
+logger = logging.getLogger(__name__)
+
 def train_and_save(checkpoint_dir: str = "checkpoints"):
-    logger = logging.getLogger("Train")
     with PowerMonitor(interval=1.0) as power:
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger.info("Checkpoint directory created at: %s", checkpoint_dir)
