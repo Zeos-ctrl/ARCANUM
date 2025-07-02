@@ -9,31 +9,19 @@ range that shows how accurate each guess might be.
 
 ## Model Architecture
 
-The model works by looking at data at each moment in time. It takes a time
-value that has been scaled to fit between –1 and +1, representing the period
-around the merger event. Along with this, it uses a set of 15 numbers that
-describe characteristics like the masses, spins, orientation, and distance of
-the sources, all scaled to a standard range. These two kinds of information are
-combined into a single 16-part input. 
+The Phase network first embeds the six physical parameters
+(masses, spins, inclination, eccentricity) into a learned representation using
+two fully connected layers, then concatenates that embedding with the scalar
+time input and passes the result through four deeper layers to predict the
+instantaneous phase at each moment. The AmplitudeNet simply takes the normalized
+time together with the same six parameter embeddings, feeds them through three
+fully connected layers, and outputs the normalized amplitude envelope.
+Both networks use ReLU activations and are trained simultaneously with
+a combined mean‐squared‐error loss on amplitude and phase, allowing the
+optimizer to adjust both models.
 
-This input is then sent to two separate parts of the model. One part, called
-“AmplitudeNet,” predicts a single number between 0 and 1 that represents how
-strong the wave is at that moment. The other part, called “PhaseDNNFull,”
-first processes the 15 source-related numbers through a small network to create
-a summary, then combines this with the time information and passes both through
-several smaller subnetworks. These subnetworks work together to calculate small
-changes in the wave’s phase. By adding up all these small changes over time,
-the model builds up a complete picture of the wave’s phase.
-
-When the model is being trained, its predictions for the wave’s strength and
-phase are compared to the true known values. The training gives more importance
-to getting the details right close to the merger event. Using techniques like
-special optimization methods, dropout, normalization, residual connections, and
-specific ways of initializing the network, the model learns how to accurately
-predict both the size and phase of gravitational wave signals for any set of
-source parameters.
-
-![Initial proposed network (Subject to change)](./.images/arch.png)
+![Initial proposed amplitude network (Subject to change)](./.images/amp_net.png)
+![Initial proposed phase network (Subject to change)](./.images/phase_net.png)
 
 ## Usage
 
