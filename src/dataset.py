@@ -103,7 +103,7 @@ def generate_data(clean: bool = True, samples: int = NUM_SAMPLES) -> GeneratedDa
     # Normalize log amplitudes to [0,1]
     all_log_amp_norm = (all_log_amp - log_amp_min) / (log_amp_max - log_amp_min)
 
-    # Time normalization
+    # Time normalization [-1,1]
     time_unscaled = np.linspace(-WAVEFORM_LENGTH * DELTA_T, 0.0, WAVEFORM_LENGTH)
     t_norm_array = 2.0 * (time_unscaled - time_unscaled.min()) / \
                    (time_unscaled.max() - time_unscaled.min()) - 1.0

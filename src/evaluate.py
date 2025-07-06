@@ -92,8 +92,7 @@ def cross_correlation_fixed_q(
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    # 1) Train/infer on the SAME clean dataset your model saw:
-    data = generate_data(clean=True)                # clean=True → no PSD noise
+    data = generate_data(clean=True)
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     qs, matches = [], []
@@ -104,28 +103,28 @@ def cross_correlation_fixed_q(
     mass_ratios = data.thetas[:,1] / data.thetas[:,0]  # m2/m1 for each sample
 
     for q in q_list:
-        # 2) Find the dataset index whose m2/m1 is closest to q
+        # Find the dataset index whose m2/m1 is closest to q
         idx = np.argmin(np.abs(mass_ratios - q))
         m1, m2, c1z, c2z, incl_i, ecc_i = data.thetas[idx]
 
-        # 3) Recover the "true" envelope + phase from your stored targets:
-        amp_true_norm = data.targets_A.reshape(-1, L)[idx]   # normalized log10(A)
-        phi_true      = data.targets_phi.reshape(-1, L)[idx] # unwrapped phase
+        # Recover the true envelope + phase from stored targets:
+        amp_true_norm = data.targets_A.reshape(-1, L)[idx]
+        phi_true      = data.targets_phi.reshape(-1, L)[idx]
 
-        # 4) Invert log‐min‐max → physical amplitude
+        # Invert log‐min‐max → physical amplitude
         log_rec    = amp_true_norm * (data.log_amp_max - data.log_amp_min) \
                      + data.log_amp_min
         amp_true   = 10**log_rec
         h_true     = amp_true * np.cos(phi_true)
 
-        # 5) Model prediction & inversion
+        # Model prediction & inversion
         t_norm, amp_pred_norm, phi_pred = pred.predict(
             m1,m2,c1z,c2z,incl_i,ecc_i
         )
         amp_pred = pred.inverse_log_norm(amp_pred_norm)
         h_pred   = amp_pred * np.cos(phi_pred)
 
-        # 6) Compute match
+        # Compute match
         match = compute_match(h_true, h_pred)
         qs.append(q)
         matches.append(match)
@@ -135,11 +134,11 @@ def cross_correlation_fixed_q(
         h_preds.append(h_pred)
         t_norms.append(t_norm)
 
-    # --- plotting grid of strain / amplitude / phase ---
+    # plotting grid of strain / amplitude / phase
     K = len(q_list)
     _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
     for row, (q, h_true, h_pred, t_norm) in enumerate(zip(qs, h_trues, h_preds, t_norms)):
-        # true envelope + phase (just for plotting)
+        # true envelope + phase
         analytic_true = hilbert(h_true)
         A_true = np.abs(analytic_true)
         phi_true = np.unwrap(np.angle(analytic_true))
@@ -178,7 +177,7 @@ def cross_correlation_fixed_q(
     plt.close()
     logger.info("Saved waveform grid plot.")
 
-    # --- match vs q scatter ---
+    # match vs q scatter
     plt.figure(figsize=(8,5))
     plt.scatter(qs, matches)
     plt.xlabel(r"$q=m_2/m_1$")
