@@ -9,8 +9,7 @@ from src.config import *
 
 logger = logging.getLogger(__name__)
 
-def save_checkpoint(checkpoint_dir, amp_model, phase_model,
-                    param_means, param_stds, t_norm_array):
+def save_checkpoint(checkpoint_dir, amp_model, phase_model, data):
     logger.info(f"Saving checkpoint to '{checkpoint_dir}'")
     os.makedirs(checkpoint_dir, exist_ok=True)
 
@@ -22,16 +21,17 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model,
     logger.debug("Saved model weights.")
 
     # Normalization stats & constants
-    np.save(os.path.join(checkpoint_dir, "param_means.npy"), param_means)
-    np.save(os.path.join(checkpoint_dir, "param_stds.npy"),  param_stds)
-    np.save(os.path.join(checkpoint_dir, "t_norm_array.npy"), t_norm_array)
+    np.save(os.path.join(checkpoint_dir, "param_means.npy"), data.param_means)
+    np.save(os.path.join(checkpoint_dir, "param_stds.npy"),  data.param_stds)
+    np.save(os.path.join(checkpoint_dir, "t_norm_array.npy"), data.t_norm_array)
     logger.debug("Saved normalization stats and constants.")
 
     # Save metadata JSON
     meta = {
         "waveform_length": WAVEFORM_LENGTH,
         "delta_t": DELTA_T,
-        "device": str(DEVICE)
+        "log_amp_min": float(data.log_amp_min),
+        "log_amp_max": float(data.log_amp_max),
     }
     with open(os.path.join(checkpoint_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
@@ -67,6 +67,8 @@ class WaveformPredictor:
         if os.path.exists(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
+            self.log_amp_min = meta["log_amp_min"]
+            self.log_amp_max = meta["log_amp_max"]
             self.waveform_length = meta["waveform_length"]
             self.delta_t         = meta["delta_t"]
             self.logger.debug(f"Loaded meta: waveform_length={self.waveform_length}, delta_t={self.delta_t}")
@@ -99,6 +101,12 @@ class WaveformPredictor:
         """raw_params: array-like of shape (6,)"""
         return (raw_params - self.param_means) / self.param_stds
 
+    def inverse_log_norm(self, y_norm: np.ndarray) -> np.ndarray:
+        # 1) Denormalize log10(A):  y = y_norm*(U−L) + L
+        y = y_norm * (self.log_amp_max - self.log_amp_min) + self.log_amp_min
+        # 2) Back to linear amplitude
+        return 10 ** y
+
     def predict(self, m1, m2, chi1z, chi2z, incl, ecc):
         self.logger.debug(f"Predict called with params: m1={m1}, m2={m2}, chi1z={chi1z}, chi2z={chi2z}, incl={incl}, ecc={ecc}")
         # 1. Normalize and build input tensor of shape (L,7)
@@ -111,7 +119,6 @@ class WaveformPredictor:
         params_grid = np.tile(theta_n, (L,1))  # (L,6)
         inp = np.concatenate([t_n[:,None], params_grid], axis=1).astype(np.float32)
 
-        # 2. Predict
         with torch.no_grad():
             inp_t = torch.from_numpy(inp).to(self.device)
             amp_pred_n = (
