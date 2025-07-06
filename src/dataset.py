@@ -18,12 +18,12 @@ logger = logging.getLogger(__name__)
 @dataclass
 class GeneratedDataset:
     inputs: np.ndarray         # (N_total, 7)
-    targets_A: np.ndarray      # (N_total, 1)
+    targets_A: np.ndarray      # (N_total, 1) normalized log10 amplitude
     targets_phi: np.ndarray    # (N_total, 1)
     time_unscaled: np.ndarray  # (WAVEFORM_LENGTH,)
     thetas: np.ndarray         # (NUM_SAMPLES, 6)
-    A_peaks: np.ndarray        # (NUM_SAMPLES,)
-    amp_norm: np.ndarray       # (NUM_SAMPLES, WAVEFORM_LENGTH)
+    log_amp_min: float         # global minimum of log10 amplitude
+    log_amp_max: float         # global maximum of log10 amplitude
     phi_unwrap: np.ndarray     # (NUM_SAMPLES, WAVEFORM_LENGTH)
     param_means: np.ndarray    # (6,)
     param_stds: np.ndarray     # (6,)
@@ -39,8 +39,9 @@ def sample_parameters(n):
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 
-def make_noisy_waveform(theta, psd_arr, seed=None):
-    logger.debug(f"Generating waveform with theta={theta}, seed={seed}")
+def make_waveform(theta):
+    """Generate a clean (noise-free) waveform for parameters theta."""
+    logger.debug(f"Generating clean waveform with theta={theta}")
     m1, m2, chi1z, chi2z, incl, ecc = theta
     hp, _ = get_td_waveform(
         mass1=m1, mass2=m2,
@@ -51,65 +52,79 @@ def make_noisy_waveform(theta, psd_arr, seed=None):
     )
     h_plus = hp.numpy()
     L = len(h_plus)
-    logger.debug(f"Raw waveform length: {L}")
-
     if L >= WAVEFORM_LENGTH:
-        h_cut = h_plus[-WAVEFORM_LENGTH:]
-        logger.debug("Waveform truncated.")
+        return h_plus[-WAVEFORM_LENGTH:]
     else:
         pad_amt = WAVEFORM_LENGTH - L
-        h_cut = np.pad(h_plus, (pad_amt, 0), mode="constant")
-        logger.debug(f"Waveform padded by {pad_amt} samples.")
+        return np.pad(h_plus, (pad_amt, 0), mode="constant")
 
+def make_noisy_waveform(theta, psd_arr, seed=None):
+    """Generate a noisy waveform by adding PSD-based noise to the clean waveform."""
+    logger.debug(f"Generating noisy waveform with theta={theta}")
+    h_clean = make_waveform(theta)
     noise_td = noise.noise_from_psd(WAVEFORM_LENGTH, DELTA_T, psd_arr, seed=seed).numpy()
-    return h_cut + noise_td
+    return h_clean + noise_td
 
-def generate_data() -> GeneratedDataset:
-    logger.info("Generating dataset...")
-    
-    thetas = sample_parameters(NUM_SAMPLES)
-    logger.debug("Computing PSD...")
-    
+
+def generate_data(clean: bool = True, samples: int = NUM_SAMPLES) -> GeneratedDataset:
+    """
+    Generate dataset of (log-scaled) amplitude & phase.
+    If clean=True, use noise-free waveforms; otherwise include PSD noise.
+    """
+    logger.info(f"Generating {'clean' if clean else 'noisy'} dataset with log-scaling...")
+    thetas = sample_parameters(samples)
+
+    # Compute PSD for noisy option
     delta_f = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
     psd_arr = aLIGOZeroDetHighPower(WAVEFORM_LENGTH, delta_f, F_LOWER)
 
-    all_A_peak = np.zeros(NUM_SAMPLES)
-    all_amp_norm = np.zeros((NUM_SAMPLES, WAVEFORM_LENGTH))
-    all_phi_unwrap = np.zeros((NUM_SAMPLES, WAVEFORM_LENGTH))
+    # Allocate arrays
+    all_log_amp = np.zeros((samples, WAVEFORM_LENGTH))
+    all_phi_unwrap = np.zeros((samples, WAVEFORM_LENGTH))
+    eps = 1e-30
 
-    for i in range(NUM_SAMPLES):
-        logger.debug(f"Generating waveform {i + 1}/{NUM_SAMPLES}")
-        h_noisy = make_noisy_waveform(thetas[i], psd_arr, seed=i)
-        A_peak = np.max(np.abs(h_noisy)) + 1e-30
-        analytic = hilbert(h_noisy)
-        inst_amp = np.abs(analytic)
-        inst_phi = np.unwrap(np.angle(analytic))
+    for i in range(samples):
+        # Choose waveform generator
+        if clean:
+            h = make_waveform(thetas[i])
+        else:
+            h = make_noisy_waveform(thetas[i], psd_arr, seed=i)
 
-        all_A_peak[i] = A_peak
-        all_amp_norm[i] = inst_amp / A_peak
-        all_phi_unwrap[i] = inst_phi
+        analytic = hilbert(h)
+        inst_amp = np.abs(analytic) + eps  # avoid log(0)
+        all_log_amp[i] = np.log10(inst_amp)
+        all_phi_unwrap[i] = np.unwrap(np.angle(analytic))
 
-    logger.info("Waveform generation complete. Normalizing inputs...")
+    # Determine global min/max in log-space
+    log_amp_min = all_log_amp.min()
+    log_amp_max = all_log_amp.max()
+    logger.debug(f"Log10 amplitude range: [{log_amp_min:.3f}, {log_amp_max:.3f}]")
 
+    # Normalize log amplitudes to [0,1]
+    all_log_amp_norm = (all_log_amp - log_amp_min) / (log_amp_max - log_amp_min)
+
+    # Time normalization
     time_unscaled = np.linspace(-WAVEFORM_LENGTH * DELTA_T, 0.0, WAVEFORM_LENGTH)
     t_norm_array = 2.0 * (time_unscaled - time_unscaled.min()) / \
                    (time_unscaled.max() - time_unscaled.min()) - 1.0
 
+    # Parameter normalization
     param_means = thetas.mean(axis=0)
     param_stds = thetas.std(axis=0)
     theta_norm = (thetas - param_means) / param_stds
     logger.debug(f"Parameter normalization: means={param_means}, stds={param_stds}")
 
-    S, L = NUM_SAMPLES, WAVEFORM_LENGTH
+    # Build inputs
+    S, L = samples, WAVEFORM_LENGTH
     t_grid = np.broadcast_to(t_norm_array, (S, L))
     theta_grid = np.broadcast_to(theta_norm[:, None, :], (S, L, 6))
     inputs = np.concatenate([t_grid[..., None], theta_grid], axis=-1).reshape(-1, 7)
 
-    targets_A = all_amp_norm.reshape(-1, 1)
+    # Targets
+    targets_A = all_log_amp_norm.reshape(-1, 1)
     targets_phi = all_phi_unwrap.reshape(-1, 1)
 
     logger.info("Dataset generation complete.")
-    logger.debug(f"Inputs shape: {inputs.shape}, Targets shape: {targets_A.shape}, {targets_phi.shape}")
 
     return GeneratedDataset(
         inputs=inputs.astype(np.float32),
@@ -117,8 +132,8 @@ def generate_data() -> GeneratedDataset:
         targets_phi=targets_phi.astype(np.float32),
         time_unscaled=time_unscaled,
         thetas=thetas,
-        A_peaks=all_A_peak,
-        amp_norm=all_amp_norm,
+        log_amp_min=log_amp_min,
+        log_amp_max=log_amp_max,
         phi_unwrap=all_phi_unwrap,
         param_means=param_means,
         param_stds=param_stds,

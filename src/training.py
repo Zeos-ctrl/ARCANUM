@@ -25,7 +25,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         os.makedirs(checkpoint_dir, exist_ok=True)
         logger.info("Checkpoint directory created at: %s", checkpoint_dir)
 
-        data = generate_data()
+        data = generate_data(clean=False)
         logger.info("Data generated.")
 
         # Convert to torch tensors
@@ -213,8 +213,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
 
         logger.info("Fine-tuning complete.")
 
-        save_checkpoint("checkpoints", amp_model, phase_model,
-                data.param_means, data.param_stds, data.t_norm_array)
+        save_checkpoint("checkpoints", amp_model, phase_model, data)
         
         logger.info("Final model checkpoint saved.")
 

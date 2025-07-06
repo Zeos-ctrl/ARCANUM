@@ -27,44 +27,49 @@ def evaluate():
 
     _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
     time = data.time_unscaled
+    L = len(time)
 
     for row, i in enumerate(indices):
+        # Unpack parameters and get true log-norm amplitude & phase
         m1, m2, c1z, c2z, incl, ecc = data.thetas[i]
-        logger.debug(f"Sample {i}: m1={m1}, m2={m2}, spin1z={c1z}, spin2z={c2z}, incl={incl}, ecc={ecc}")
+        amp_true_norm = data.targets_A.reshape(NUM_SAMPLES, L)[i]
+        phi_true      = data.targets_phi.reshape(NUM_SAMPLES, L)[i]
 
-        A_peak = data.A_peaks[i]
-        amp_true = data.amp_norm[i]
-        phi_true = data.phi_unwrap[i]
-
+        # Predict normalized log-amplitude and phase
         t_norm, amp_pred_norm, phi_pred = pred.predict(m1, m2, c1z, c2z, incl, ecc)
 
-        h_true = A_peak * amp_true * np.cos(phi_true)
-        h_pred = A_peak * amp_pred_norm * np.cos(phi_pred)
+        # Inverse-log-normalize amplitudes into physical units
+        amp_pred = pred.inverse_log_norm(amp_pred_norm)
+        amp_true = pred.inverse_log_norm(amp_true_norm)
 
-        A_true = A_peak * amp_true
-        A_pred = A_peak * amp_pred_norm
+        # Reconstruct strains
+        h_pred = amp_pred * np.cos(phi_pred)
+        h_true = amp_true * np.cos(phi_true)
 
-        # Strain
+        # Plot Strain
         ax = axs[row, 0]
         ax.plot(time, h_true, label="True $h_+(t)$", linewidth=1)
         ax.plot(time, h_pred, "--", label="Predicted $h_+(t)$", linewidth=1)
-        if row == 0: ax.set_title("Strain")
+        if row == 0:
+            ax.set_title("Strain")
         ax.set_ylabel("Strain")
         ax.legend(loc="upper right")
 
-        # Amplitude
+        # Plot Amplitude
         ax = axs[row, 1]
-        ax.plot(time, A_true, label="True Amplitude", linewidth=1)
-        ax.plot(time, A_pred, "--", label="Predicted Amplitude", linewidth=1)
-        if row == 0: ax.set_title("Amplitude")
+        ax.plot(time, amp_true, label="True Amplitude", linewidth=1)
+        ax.plot(time, amp_pred, "--", label="Predicted Amplitude", linewidth=1)
+        if row == 0:
+            ax.set_title("Amplitude")
         ax.set_ylabel("Amplitude")
         ax.legend(loc="upper right")
 
-        # Phase
+        # Plot Phase
         ax = axs[row, 2]
         ax.plot(time, phi_true, label="True Phase", linewidth=1)
         ax.plot(time, phi_pred, "--", label="Predicted Phase", linewidth=1)
-        if row == 0: ax.set_title("Phase")
+        if row == 0:
+            ax.set_title("Phase")
         ax.set_ylabel("Phase [rad]")
         ax.legend(loc="upper right")
 
@@ -78,7 +83,6 @@ def evaluate():
     plt.savefig(out_file)
     logger.info(f"Saved waveform plots to {out_file}")
 
-
 def cross_correlation_fixed_q(
     q_list=(1.0, 1.5, 2.0, 2.5),
     chi1z=0.0, chi2z=0.0,
@@ -88,107 +92,105 @@ def cross_correlation_fixed_q(
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
+    # 1) Train/infer on the SAME clean dataset your model saw:
+    data = generate_data(clean=True)                # clean=True → no PSD noise
     pred = WaveformPredictor("checkpoints", device=DEVICE)
-    qs, matches = [], []
 
-    # Prepare storage for waveforms
+    qs, matches = [], []
     h_trues, h_preds, t_norms = [], [], []
+    L = data.time_unscaled.size
+
+    # Precompute ratios in the dataset
+    mass_ratios = data.thetas[:,1] / data.thetas[:,0]  # m2/m1 for each sample
 
     for q in q_list:
-        m1 = MASS_MIN
-        m2 = min(q * m1, MASS_MAX)
-        logger.debug(f"Evaluating q={q:.2f}: m1={m1}, m2={m2}")
+        # 2) Find the dataset index whose m2/m1 is closest to q
+        idx = np.argmin(np.abs(mass_ratios - q))
+        m1, m2, c1z, c2z, incl_i, ecc_i = data.thetas[idx]
 
-        # Generate true waveform
-        hp, _ = get_td_waveform(
-            mass1=m1, mass2=m2,
-            spin1z=chi1z, spin2z=chi2z,
-            inclination=incl, eccentricity=ecc,
-            delta_t=DELTA_T, f_lower=F_LOWER,
-            approximant=WAVEFORM
+        # 3) Recover the "true" envelope + phase from your stored targets:
+        amp_true_norm = data.targets_A.reshape(-1, L)[idx]   # normalized log10(A)
+        phi_true      = data.targets_phi.reshape(-1, L)[idx] # unwrapped phase
+
+        # 4) Invert log‐min‐max → physical amplitude
+        log_rec    = amp_true_norm * (data.log_amp_max - data.log_amp_min) \
+                     + data.log_amp_min
+        amp_true   = 10**log_rec
+        h_true     = amp_true * np.cos(phi_true)
+
+        # 5) Model prediction & inversion
+        t_norm, amp_pred_norm, phi_pred = pred.predict(
+            m1,m2,c1z,c2z,incl_i,ecc_i
         )
-        h_plus = hp.numpy()
-        if len(h_plus) >= WAVEFORM_LENGTH:
-            h_true = h_plus[-WAVEFORM_LENGTH:]
-        else:
-            pad = WAVEFORM_LENGTH - len(h_plus)
-            h_true = np.pad(h_plus, (pad, 0), mode='constant')
+        amp_pred = pred.inverse_log_norm(amp_pred_norm)
+        h_pred   = amp_pred * np.cos(phi_pred)
 
-        # Prediction
-        t_norm, amp_pred_n, phi_pred = pred.predict(m1, m2, chi1z, chi2z, incl, ecc)
-        A_peak = np.max(np.abs(h_true)) + 1e-30
-        h_pred = A_peak * amp_pred_n * np.cos(phi_pred)
-
-        # Compute match
+        # 6) Compute match
         match = compute_match(h_true, h_pred)
-        logger.debug(f"Match for q={q:.2f}: {match:.4f}")
         qs.append(q)
         matches.append(match)
 
-        # Store for plotting grid
+        # store for plotting
         h_trues.append(h_true)
         h_preds.append(h_pred)
         t_norms.append(t_norm)
 
-    # Plot grid of Strain / Amplitude / Phase for each q
+    # --- plotting grid of strain / amplitude / phase ---
     K = len(q_list)
     _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
     for row, (q, h_true, h_pred, t_norm) in enumerate(zip(qs, h_trues, h_preds, t_norms)):
-        # Analytic signals for amplitude & phase
-        true_analytic = hilbert(h_true)
-        pred_analytic = hilbert(h_pred)
-        A_true = np.abs(true_analytic)
-        phi_true = np.unwrap(np.angle(true_analytic))
-        A_pred = np.abs(pred_analytic)
-        phi_pred = np.unwrap(np.angle(pred_analytic))
+        # true envelope + phase (just for plotting)
+        analytic_true = hilbert(h_true)
+        A_true = np.abs(analytic_true)
+        phi_true = np.unwrap(np.angle(analytic_true))
+
+        analytic_pred = hilbert(h_pred)
+        A_pred = np.abs(analytic_pred)
+        phi_pred = np.unwrap(np.angle(analytic_pred))
 
         # Strain
-        ax = axs[row, 0]
+        ax = axs[row,0]
         ax.plot(t_norm, h_true, label="True", linewidth=1)
         ax.plot(t_norm, h_pred, '--', label="Predicted", linewidth=1)
-        if row == 0: ax.set_title("Strain")
+        if row==0: ax.set_title("Strain")
         ax.set_ylabel(f"q={q:.1f}")
         ax.legend(loc="upper right")
 
         # Amplitude
-        ax = axs[row, 1]
+        ax = axs[row,1]
         ax.plot(t_norm, A_true, label="True Amp", linewidth=1)
         ax.plot(t_norm, A_pred, '--', label="Predicted Amp", linewidth=1)
-        if row == 0: ax.set_title("Amplitude")
+        if row==0: ax.set_title("Amplitude")
         ax.legend(loc="upper right")
 
         # Phase
-        ax = axs[row, 2]
+        ax = axs[row,2]
         ax.plot(t_norm, phi_true, label="True Phase", linewidth=1)
         ax.plot(t_norm, phi_pred, '--', label="Predicted Phase", linewidth=1)
-        if row == 0: ax.set_title("Phase")
+        if row==0: ax.set_title("Phase")
         ax.legend(loc="upper right")
 
-    for ax in axs[-1, :]:
+    for ax in axs[-1,:]:
         ax.set_xlabel("Normalized time")
 
     plt.tight_layout()
-    grid_path = os.path.join(plot_dir, "waveform_grid_fixed_q.png")
-    plt.savefig(grid_path)
+    plt.savefig(os.path.join(plot_dir, "waveform_grid_fixed_q.png"))
     plt.close()
-    logger.info(f"Saved waveform grid plot: {grid_path}")
+    logger.info("Saved waveform grid plot.")
 
-    # Match vs q
-    qs = np.array(qs)
-    matches = np.array(matches)
-    plt.figure(figsize=(10, 6))
+    # --- match vs q scatter ---
+    plt.figure(figsize=(8,5))
     plt.scatter(qs, matches)
-    plt.xlabel(r'Mass ratio $q = m_2/m_1$')
-    plt.ylabel('Match')
-    plt.ylim(0, 1)
-    plt.title('Waveform Match vs Mass Ratio')
+    plt.xlabel(r"$q=m_2/m_1$")
+    plt.ylabel("Match")
+    plt.ylim(0.95,1)
+    plt.title("Waveform Match vs Mass Ratio")
     plt.grid(True)
     plt.tight_layout()
-    match_plot_path = os.path.join(plot_dir, "cross_correlation_fixed_q.png")
-    plt.savefig(match_plot_path)
+    plt.savefig(os.path.join(plot_dir, "cross_correlation_fixed_q.png"))
     plt.close()
-    logger.info(f"Saved match vs mass ratio plot: {match_plot_path}")
-    
+    logger.info("Saved match vs q plot.")
+  
 if __name__ == "__main__":
     # Logging
     os.makedirs("logs", exist_ok=True)
