@@ -42,7 +42,7 @@ def compute_match(h_true, h_pred):
     Compute the normalized cross‑correlation match between two 1D arrays.
     Returns a scalar in [0,1].
     """
-    logger.info("Computing waveform match...")
+    logger.debug("Computing waveform match...")
     # zero‑mean
     ht = h_true - np.mean(h_true)
     hp = h_pred - np.mean(h_pred)
@@ -50,6 +50,7 @@ def compute_match(h_true, h_pred):
     corr    = np.correlate(ht, hp, mode="full")
     max_corr= np.max(corr)
     norm    = np.sqrt(np.dot(ht, ht) * np.dot(hp, hp))
+    logger.debug(f"Spoiler alert match is: {max_corr / norm}")
     return max_corr / norm
 
 class WaveformPredictor:
@@ -133,3 +134,29 @@ class WaveformPredictor:
             )
         self.logger.debug("Prediction completed.")
         return self.t_norm_array, amp_pred_n, phi_pred
+
+    def batch_predict(self, thetas: np.ndarray):
+        """
+        Vectorized prediction for a batch of N parameter sets.
+        """
+        N = thetas.shape[0]
+        L = self.waveform_length
+
+        # Normalize parameters
+        theta_n = (thetas - self.param_means) / self.param_stds  # (N,6)
+
+        # Build input grid (N, L, 7)
+        t_grid = np.broadcast_to(self.t_norm_array, (N, L))
+        theta_grid = np.broadcast_to(theta_n[:, None, :], (N, L, 6))
+        inp = np.concatenate([t_grid[..., None], theta_grid], axis=-1).reshape(-1, 7).astype(np.float32)
+
+        # Predict normalized log-amplitude and phase
+        with torch.no_grad():
+            inp_t = torch.from_numpy(inp).to(self.device)
+            amp_pred_n = self.amp_model(inp_t).cpu().numpy().reshape(N, L)
+            phi_pred = self.phase_model(inp_t[:, :1], inp_t[:, 1:]).cpu().numpy().reshape(N, L)
+
+        # Inverse log normalization
+        amp_preds = self.inverse_log_norm(amp_pred_n)  # (N, L)
+
+        return self.t_norm_array, amp_preds, phi_pred

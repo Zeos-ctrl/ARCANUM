@@ -3,6 +3,7 @@ import logging
 import numpy as np
 from scipy.signal import hilbert
 from dataclasses import dataclass
+from scipy.signal.windows import tukey
 
 # PyCBC imports
 from pycbc import noise
@@ -66,13 +67,16 @@ def make_noisy_waveform(theta, psd_arr, seed=None):
     return h_clean + noise_td
 
 
-def generate_data(clean: bool = True, samples: int = NUM_SAMPLES) -> GeneratedDataset:
+def generate_data(clean: bool = True, samples: int = NUM_SAMPLES, alpha: float = 0.1) -> GeneratedDataset:
     """
     Generate dataset of (log-scaled) amplitude & phase.
     If clean=True, use noise-free waveforms; otherwise include PSD noise.
     """
     logger.info(f"Generating {'clean' if clean else 'noisy'} dataset with log-scaling...")
     thetas = sample_parameters(samples)
+    
+    # Precompute window
+    window = tukey(WAVEFORM_LENGTH, alpha=alpha)
 
     # Compute PSD for noisy option
     delta_f = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
@@ -83,12 +87,27 @@ def generate_data(clean: bool = True, samples: int = NUM_SAMPLES) -> GeneratedDa
     all_phi_unwrap = np.zeros((samples, WAVEFORM_LENGTH))
     eps = 1e-30
 
+    logger.info(f"Loading {WAVEFORM} waveform profile...")
+
     for i in range(samples):
         # Choose waveform generator
         if clean:
             h = make_waveform(thetas[i])
         else:
             h = make_noisy_waveform(thetas[i], psd_arr, seed=i)
+
+        # Find the nonzero region
+        nz = np.where(np.abs(h) > 0)[0]
+        if nz.size > 0:
+            start, end = nz[0], nz[-1] + 1
+            seg_len = end - start
+
+            # Build a segment‑length Tukey and embed it into a full‑length mask
+            window = np.zeros(WAVEFORM_LENGTH)
+            window[start:end] = tukey(seg_len, alpha=alpha)
+
+            # Apply it (zeros stay zeros, nonzero region fades in/out)
+            h = h * window
 
         analytic = hilbert(h)
         inst_amp = np.abs(analytic) + eps  # avoid log(0)

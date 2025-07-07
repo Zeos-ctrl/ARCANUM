@@ -182,7 +182,7 @@ def cross_correlation_fixed_q(
     plt.scatter(qs, matches)
     plt.xlabel(r"$q=m_2/m_1$")
     plt.ylabel("Match")
-    plt.ylim(0.95,1)
+    plt.ylim(min(matches),1)
     plt.title("Waveform Match vs Mass Ratio")
     plt.grid(True)
     plt.tight_layout()
@@ -202,6 +202,9 @@ if __name__ == "__main__":
             logging.FileHandler("logs/evaluation.log", mode='a'),
         ]
     )
+
+    # Stopping the voices
+    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
     evaluate()
     cross_correlation_fixed_q()
