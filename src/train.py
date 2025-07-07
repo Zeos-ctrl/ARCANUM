@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import os
 import logging
 from tqdm import tqdm
+import matplotlib.pyplot as plt
 
 # Library imports
 from src.config import *
@@ -214,15 +215,29 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
                 tqdm.write(
                     f"[FT {epoch:2d}] Train A={ft_amp_loss:.3e}, φ={ft_phi_loss:.3e}"
                 )
-
             logger.info("Fine-tuning complete.")
 
             save_checkpoint("checkpoints", amp_model, phase_model, data)
-            
             logger.info("Final model checkpoint saved.")
 
-            phase_model.eval()
-            amp_model.eval()
+            train_params = data.thetas
+
+            os.makedirs("plots/training", exist_ok=True)
+
+            labels = ["m1", "m2", "chi1z", "chi2z", "incl", "ecc"]
+            fig, axes = plt.subplots(2, 3, figsize=(16, 8))
+
+            for i, ax in enumerate(axes.flat):
+                ax.hist(train_params[:, i], bins=30, color="steelblue", alpha=0.7)
+                ax.set_title(f"{labels[i]} Distribution")
+                ax.set_xlabel(labels[i])
+                ax.set_ylabel("Count")
+
+            plt.tight_layout()
+            plt.savefig("plots/training/parameter_distributions.png")
+            plt.close()
+
+            logger.info("Saved parameter distribution plot to plots/training/parameter_distributions.png.")
 
     stats = power.summary()
     logger.info(

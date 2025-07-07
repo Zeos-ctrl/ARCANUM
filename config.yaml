@@ -7,7 +7,7 @@ pycbc:
     waveform_length: 1024
 
   phenomd:
-    waveform_name: "IMRPhenomD"
+    waveform_name: "IMRPhenomPv2"
     delta_t:       2048
     f_lower:       20.0
     detector_name: "H1"
