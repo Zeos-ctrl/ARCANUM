@@ -31,9 +31,9 @@ class GeneratedDataset:
     theta_norm: np.ndarray     # (NUM_SAMPLES, 6)
     t_norm_array: np.ndarray   # (WAVEFORM_LENGTH,)
 
-def sample_parameters(n):
+def sample_parameters(n, seed=None):
     logger.debug(f"Sampling {n} parameter sets...")
-    rng = np.random.default_rng(0)
+    rng = np.random.default_rng(seed)
     lows  = [MASS_MIN, MASS_MIN, SPIN_MIN, SPIN_MIN, INCLINATION_MIN, ECC_MIN]
     highs = [MASS_MAX, MASS_MAX, SPIN_MAX, SPIN_MAX, INCLINATION_MAX, ECC_MAX]
     samples = rng.uniform(lows, highs, size=(n, 6))

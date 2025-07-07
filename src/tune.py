@@ -28,6 +28,7 @@ def train_and_eval(
     data,
     amp_hidden_dims,
     phase_hidden_dims,
+    banks,
     learning_rate,
     batch_size,
     num_epochs,
@@ -68,7 +69,7 @@ def train_and_eval(
         param_dim=6, time_dim=1,
         emb_hidden=[64,64],
         phase_hidden=phase_hidden_dims,
-        N_banks=1
+        N_banks=banks
     ).to(device)
     logger.debug("Instantiated models: AmplitudeNet(%s), PhaseDNN_Full(%s)",
                  amp_hidden_dims, phase_hidden_dims)
@@ -145,6 +146,7 @@ def objective(trial):
     bs     = trial.suggest_categorical("batch_size", [64,128,256,512])
     amp_size  = trial.suggest_categorical("amp_hidden_size", (64, 128, 256))
     phase_size= trial.suggest_categorical("phase_hidden_size", (64, 128))
+    banks = trial.suggest_categorical("banks", [1,2,3,4])
  
     amp_h      = [amp_size] * 3
     phase_h    = [phase_size] * 4
@@ -156,6 +158,7 @@ def objective(trial):
             DATA,
             amp_hidden_dims=amp_h,
             phase_hidden_dims=phase_h,
+            banks=banks,
             learning_rate=lr,
             batch_size=bs,
             num_epochs=TRAINING.num_epochs,

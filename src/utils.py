@@ -32,6 +32,7 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model, data):
         "delta_t": DELTA_T,
         "log_amp_min": float(data.log_amp_min),
         "log_amp_max": float(data.log_amp_max),
+        "train_samples": NUM_SAMPLES
     }
     with open(os.path.join(checkpoint_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
@@ -72,6 +73,7 @@ class WaveformPredictor:
             self.log_amp_max = meta["log_amp_max"]
             self.waveform_length = meta["waveform_length"]
             self.delta_t         = meta["delta_t"]
+            self.train_samples = int(meta.get("train_samples", NUM_SAMPLES))
             self.logger.debug(f"Loaded meta: waveform_length={self.waveform_length}, delta_t={self.delta_t}")
         else:
             self.waveform_length = YOUR_DEFAULT
@@ -103,14 +105,14 @@ class WaveformPredictor:
         return (raw_params - self.param_means) / self.param_stds
 
     def inverse_log_norm(self, y_norm: np.ndarray) -> np.ndarray:
-        # 1) Denormalize log10(A):  y = y_norm*(U−L) + L
+        # Denormalize log10(A):  y = y_norm*(U−L) + L
         y = y_norm * (self.log_amp_max - self.log_amp_min) + self.log_amp_min
-        # 2) Back to linear amplitude
+        # Back to linear amplitude
         return 10 ** y
 
     def predict(self, m1, m2, chi1z, chi2z, incl, ecc):
         self.logger.debug(f"Predict called with params: m1={m1}, m2={m2}, chi1z={chi1z}, chi2z={chi2z}, incl={incl}, ecc={ecc}")
-        # 1. Normalize and build input tensor of shape (L,7)
+        # Normalize and build input tensor of shape (L,7)
         theta = np.array([m1,m2,chi1z,chi2z,incl,ecc])
         theta_n = self._normalize_params(theta)
         L = self.waveform_length
@@ -135,28 +137,40 @@ class WaveformPredictor:
         self.logger.debug("Prediction completed.")
         return self.t_norm_array, amp_pred_n, phi_pred
 
-    def batch_predict(self, thetas: np.ndarray):
+    def batch_predict(self, thetas: np.ndarray, batch_size: int = None):
         """
-        Vectorized prediction for a batch of N parameter sets.
+        Vectorized prediction in chunks of `batch_size` (default = how many samples you trained on).
         """
         N = thetas.shape[0]
         L = self.waveform_length
 
-        # Normalize parameters
-        theta_n = (thetas - self.param_means) / self.param_stds  # (N,6)
+        # Use training set size as default batch_size
+        if batch_size is None:
+            batch_size = self.train_samples
 
-        # Build input grid (N, L, 7)
-        t_grid = np.broadcast_to(self.t_norm_array, (N, L))
-        theta_grid = np.broadcast_to(theta_n[:, None, :], (N, L, 6))
-        inp = np.concatenate([t_grid[..., None], theta_grid], axis=-1).reshape(-1, 7).astype(np.float32)
+        results_amp = []
+        results_phi = []
+        # now chunk in slices of `batch_size`:
+        for start in range(0, N, batch_size):
+            end = min(start + batch_size, N)
+            theta_batch = thetas[start:end]
+            theta_n = (theta_batch - self.param_means) / self.param_stds
 
-        # Predict normalized log-amplitude and phase
-        with torch.no_grad():
-            inp_t = torch.from_numpy(inp).to(self.device)
-            amp_pred_n = self.amp_model(inp_t).cpu().numpy().reshape(N, L)
-            phi_pred = self.phase_model(inp_t[:, :1], inp_t[:, 1:]).cpu().numpy().reshape(N, L)
+            t_grid = np.broadcast_to(self.t_norm_array, (end - start, L))
+            theta_grid = np.broadcast_to(theta_n[:, None, :], (end - start, L, 6))
+            inp = np.concatenate([t_grid[...,None], theta_grid], axis=-1) \
+                     .reshape(-1, 7).astype(np.float32)
 
-        # Inverse log normalization
-        amp_preds = self.inverse_log_norm(amp_pred_n)  # (N, L)
+            with torch.no_grad():
+                inp_t     = torch.from_numpy(inp).to(self.device)
+                amp_n     = self.amp_model(inp_t).cpu().numpy() \
+                              .reshape(end - start, L)
+                phi_n     = self.phase_model(inp_t[:, :1], inp_t[:, 1:]) \
+                              .cpu().numpy().reshape(end - start, L)
 
-        return self.t_norm_array, amp_preds, phi_pred
+            results_amp.append(self.inverse_log_norm(amp_n))
+            results_phi.append(phi_n)
+
+        amp_preds = np.concatenate(results_amp, axis=0)
+        phi_preds = np.concatenate(results_phi, axis=0)
+        return self.t_norm_array, amp_preds, phi_preds

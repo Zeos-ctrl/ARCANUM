@@ -54,11 +54,11 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         logger.info("Generated %d/%d waveforms in %.3fs", h_true.shape[0], n, t_pycbc)
 
         # Network prediction
-        logger.debug("Starting DNN batch prediction for %d waveforms", h_true.shape[0])
+        logger.debug("Starting Network batch prediction for %d waveforms", h_true.shape[0])
         t0 = time.perf_counter()
         _, amp_pred, phi_pred = predictor.batch_predict(valid_thetas)
         t_pred = time.perf_counter() - t0
-        logger.info("DNN predicted %d waveforms in %.3fs", amp_pred.shape[0], t_pred)
+        logger.info("Network predicted %d waveforms in %.3fs", amp_pred.shape[0], t_pred)
 
         # Compute matches
         logger.debug("Computing matches for each pair")
@@ -116,7 +116,6 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
     logger.info("Benchmark complete.")
     return results
 
-
 if __name__ == "__main__":
 
     # Logging
@@ -133,7 +132,7 @@ if __name__ == "__main__":
 
     # Instantiate predictor once
     predictor = WaveformPredictor("checkpoints", device=DEVICE)
-    sample_counts = [10, 100, 1000]
+    sample_counts = [10,100,1000]
 
     # Run benchmark
     results = benchmark(sample_counts, predictor)
