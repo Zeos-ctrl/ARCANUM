@@ -10,5 +10,6 @@ scipy>=1.10
 scikit-learn>=1.2
 pyyaml>=6.0
 pytest>=8.4.0
+pycbc
 tqdm>=4.64
 matplotlib>=3.7

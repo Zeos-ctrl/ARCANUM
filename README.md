@@ -37,7 +37,7 @@ Next to train the model you need to update the config file for your number of
 samples to use, then from the root dir run.
 
 ```python
-python3 -m src.training
+python3 -m src.train
 ```
 
 We can evaluate the model to get the KDE of errors, CDF of absolute errors,
@@ -45,7 +45,7 @@ error vs time for one sample, mean absolute error vs time, a heatmap of absolute
 errors and summary statistics of the model.
 
 ```python
-python3 -m src.evaluate
+python3 -m src.eval
 ```
 
 We can compare the trained model against PyCBC for generating waveforms using the
@@ -60,7 +60,13 @@ Finally, we can optimise the model using optuna and hyperparameter tuning over
 learning rate, dropout, hidden layers, etc.
 
 ```python
-python3 -m src.hyperparameter_tuning
+python3 -m src.tune
+```
+
+To see the status of the study run.
+
+```bash
+optuna-dashboard sqlite:///optuna_study.db --host 0.0.0.0 --port 8080
 ```
 
 ## Issues

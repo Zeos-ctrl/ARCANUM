@@ -1,9 +1,17 @@
 pycbc:
-  waveform_name: "SEOBNRv4"
-  delta_t: 0.00024414062   # 1/4096
-  f_lower: 20.0
-  detector_name: "H1"
-  waveform_length: 1024
+  seobnrv4:
+    waveform_name: "SEOBNRv4"
+    delta_t:       1024
+    f_lower:       20.0
+    detector_name: "H1"
+    waveform_length: 1024
+
+  phenomd:
+    waveform_name: "IMRPhenomD"
+    delta_t:       2048
+    f_lower:       20.0
+    detector_name: "H1"
+    waveform_length: 16384
 
 sampling_ranges:
   mass_min: 20.0
@@ -13,16 +21,40 @@ sampling_ranges:
   incl_min: 0.0
   incl_max: 3.141592653589793
   ecc_min: 0.0
-  ecc_max: 0.3
+  ecc_max: 0.9
 
 training:
-  num_samples: 10
-  batch_size: 256
-  num_epochs: 100
-  learning_rate: 0.001
-  patience: 50
-  fine_tune_epochs: 50
-  fine_tune_lr: 0.0001
+  # Data/setup
+  num_samples:    10
+  val_split:      0.2
+  random_seed:    42
+
+  # Optimization
+  optimizer:      "adam"
+  learning_rate:  0.001
+  weight_decay:   0.0
+
+  # Batching & epochs
+  batch_size:     256
+  num_epochs:     200
+  patience:       50
+  min_delta:      1e-6
+
+  # Fine-tuning
+  fine_tune:
+    enable:       true
+    epochs:       50
+    learning_rate: 0.0001
+
+  # Hyperparameter search
+  hpo:
+    n_trials:     50
+    sampler:      "tpe"     # tpe, random
+    timeout:      null      # seconds, or null
+
+  # Misc
+  gradient_clip:  1.0      # max_norm for gradient clipping
+  seed_everything: true    # whether to fix all RNG seeds
 
 device: "cuda"
 

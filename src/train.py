@@ -37,7 +37,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         # train/val split
         train_idx, val_idx = train_test_split(
             list(range(inputs_tensor.size(0))),
-            test_size=0.2, random_state=42, shuffle=True
+            test_size=VAL_SPLIT, random_state=RANDOM_SEED, shuffle=True
         )
         logger.info("Split data: %d train / %d val", len(train_idx), len(val_idx))
 
@@ -72,6 +72,9 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         best_val   = float('inf')
         best_state = None
         wait       = 0
+
+        torch.nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
+        torch.nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
 
         # --- Training & validation loops ---
         logger.info("Starting training loop...")
@@ -140,7 +143,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
             total_val   = val_amp_loss + val_phi_loss
 
             # --- Early stopping check ---
-            if total_val < best_val - 1e-12:
+            if total_val < best_val - MIN_DELTA:
                 best_val   = total_val
                 best_state = {
                     'phase': phase_model.state_dict(),
@@ -171,54 +174,55 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         logger.info("Main training complete.")
 
         # --- Fine‑tuning stage ---
-        print("\n=== Fine‑tuning ===")
-        for g in optimizer.param_groups:
-            g['lr'] = FINE_TUNE_LR
+        if FINE_TUNE_CFG.enable:
+            print("\n=== Fine‑tuning ===")
+            for g in optimizer.param_groups:
+                g['lr'] = FINE_TUNE_CFG.learning_rate
 
-        for epoch in range(1, FINE_TUNE_EPOCHS + 1):
-            phase_model.train()
-            amp_model.train()
-            ft_amp_loss = 0.0
-            ft_phi_loss = 0.0
-            ft_count    = 0
+            for epoch in range(1, FINE_TUNE_CFG.epochs + 1):
+                phase_model.train()
+                amp_model.train()
+                ft_amp_loss = 0.0
+                ft_phi_loss = 0.0
+                ft_count    = 0
 
-            for x, A_true, phi_true in tqdm(train_loader, desc=f"FT E{epoch}", leave=False):
-                x, A_true, phi_true = x.to(DEVICE), A_true.to(DEVICE), phi_true.to(DEVICE)
+                for x, A_true, phi_true in tqdm(train_loader, desc=f"FT E{epoch}", leave=False):
+                    x, A_true, phi_true = x.to(DEVICE), A_true.to(DEVICE), phi_true.to(DEVICE)
 
-                t_norm = x[:, :1]
-                theta  = x[:, 1:]
+                    t_norm = x[:, :1]
+                    theta  = x[:, 1:]
 
-                A_pred   = amp_model(x)
-                phi_pred = phase_model(t_norm, theta)
+                    A_pred   = amp_model(x)
+                    phi_pred = phase_model(t_norm, theta)
 
-                loss_amp = F.mse_loss(A_pred,   A_true)
-                loss_phi = F.mse_loss(phi_pred, phi_true)
-                loss     = loss_amp + loss_phi
+                    loss_amp = F.mse_loss(A_pred,   A_true)
+                    loss_phi = F.mse_loss(phi_pred, phi_true)
+                    loss     = loss_amp + loss_phi
 
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
 
-                bs = x.size(0)
-                ft_amp_loss += loss_amp.item() * bs
-                ft_phi_loss += loss_phi.item() * bs
-                ft_count    += bs
+                    bs = x.size(0)
+                    ft_amp_loss += loss_amp.item() * bs
+                    ft_phi_loss += loss_phi.item() * bs
+                    ft_count    += bs
 
-            ft_amp_loss /= ft_count
-            ft_phi_loss /= ft_count
+                ft_amp_loss /= ft_count
+                ft_phi_loss /= ft_count
 
-            tqdm.write(
-                f"[FT {epoch:2d}] Train A={ft_amp_loss:.3e}, φ={ft_phi_loss:.3e}"
-            )
+                tqdm.write(
+                    f"[FT {epoch:2d}] Train A={ft_amp_loss:.3e}, φ={ft_phi_loss:.3e}"
+                )
 
-        logger.info("Fine-tuning complete.")
+            logger.info("Fine-tuning complete.")
 
-        save_checkpoint("checkpoints", amp_model, phase_model, data)
-        
-        logger.info("Final model checkpoint saved.")
+            save_checkpoint("checkpoints", amp_model, phase_model, data)
+            
+            logger.info("Final model checkpoint saved.")
 
-        phase_model.eval()
-        amp_model.eval()
+            phase_model.eval()
+            amp_model.eval()
 
     stats = power.summary()
     logger.info(
