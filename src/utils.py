@@ -2,6 +2,7 @@ import os
 import json
 import torch
 import logging
+import requests
 import numpy as np
 
 from src.model import *
@@ -37,6 +38,24 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model, data):
     with open(os.path.join(checkpoint_dir, "meta.json"), "w") as f:
         json.dump(meta, f)
     logger.info("Saved metadata JSON.")
+
+def notify_slack(message: str, url: str = None):
+    """
+    Send a notification message to Slack via Incoming Webhook.
+    If url is None, falls back to the WEBHOOK_URL from config.
+    """
+    hook = url or WEBHOOK_URL
+    if not hook:
+        logger.warning("No WEBHOOK_URL configured—skipping Slack notification.")
+        return
+
+    payload = {"text": message}
+    try:
+        resp = requests.post(hook, json=payload, timeout=5)
+        resp.raise_for_status()
+        logger.info("Sent Slack notification.")
+    except Exception as e:
+        logger.error("Failed to send Slack notification: %s", e)
 
 def compute_match(h_true, h_pred):
     """

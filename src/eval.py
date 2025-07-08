@@ -11,7 +11,7 @@ from pycbc.waveform import get_td_waveform
 # Libraries
 from src.config import *
 from src.dataset import generate_data
-from src.utils import compute_match, WaveformPredictor
+from src.utils import compute_match, WaveformPredictor, notify_slack
 
 logger = logging.getLogger(__name__)
 
@@ -189,6 +189,8 @@ def cross_correlation_fixed_q(
     plt.savefig(os.path.join(plot_dir, "cross_correlation_fixed_q.png"))
     plt.close()
     logger.info("Saved match vs q plot.")
+
+    return matches
   
 if __name__ == "__main__":
     # Logging
@@ -207,4 +209,8 @@ if __name__ == "__main__":
     logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
 
     evaluate()
-    cross_correlation_fixed_q()
+    matches = cross_correlation_fixed_q()
+
+    notify_slack(
+            f"Evaluation complete! cross correlation matches: {matches}\n"
+    )

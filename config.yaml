@@ -1,30 +1,30 @@
 pycbc:
   seobnrv4:
-    waveform_name: "SEOBNRv4"
-    delta_t:       1024
-    f_lower:       20.0
-    detector_name: "H1"
+    waveform_name:   "SEOBNRv4"
+    delta_t:         1024
+    f_lower:         20.0
+    detector_name:   "H1"
     waveform_length: 1024
 
   phenomd:
-    waveform_name: "IMRPhenomPv2"
-    delta_t:       2048
-    f_lower:       20.0
-    detector_name: "H1"
+    waveform_name:   "IMRPhenomPv2"
+    delta_t:         2048
+    f_lower:         20.0
+    detector_name:   "H1"
     waveform_length: 16384
 
 sampling_ranges:
-  mass_min: 20.0
-  mass_max: 50.0
+  mass_min:     20.0
+  mass_max:     50.0
   spin_mag_min: -0.99
-  spin_mag_max: 0.99
-  incl_min: 0.0
-  incl_max: 3.141592653589793
-  ecc_min: 0.0
-  ecc_max: 0.9
+  spin_mag_max:  0.99
+  incl_min:      0.0
+  incl_max:      3.141592653589793
+  ecc_min:       0.0
+  ecc_max:       0.9
 
 training:
-  # Data/setup
+  # Data & splitting
   num_samples:    10
   val_split:      0.2
   random_seed:    42
@@ -39,24 +39,34 @@ training:
   num_epochs:     200
   patience:       50
   min_delta:      1e-6
+  gradient_clip:  1.0
 
-  # Fine-tuning
+  # Scheduler
+  scheduler:
+    lr_decay_factor: 0.5    # multiply LR by this on plateau
+    lr_patience:     10     # epochs to wait before reducing
+    min_lr:          1e-6   # lower bound on LR
+
+  # Fine‑tuning
   fine_tune:
-    enable:       true
-    epochs:       50
-    learning_rate: 0.0001
+    enable:         true
+    epochs:         50
+    learning_rate:  0.0001
 
   # Hyperparameter search
   hpo:
-    n_trials:     50
-    sampler:      "tpe"     # tpe, random
-    timeout:      null      # seconds, or null
+    n_trials:       50
+    sampler:        "tpe"
+    timeout:        null
 
   # Misc
-  gradient_clip:  1.0      # max_norm for gradient clipping
-  seed_everything: true    # whether to fix all RNG seeds
+  seed_everything: true
 
 device: "cuda"
+
+notifications:
+  webhook_url:  
+    "https://hooks.slack.com/services/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"
 
 paths:
   checkpoint_dir: "checkpoints"

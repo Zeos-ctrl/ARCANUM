@@ -52,6 +52,9 @@ NUM_EPOCHS       = TRAINING.num_epochs
 PATIENCE         = TRAINING.patience
 MIN_DELTA        = float(TRAINING.min_delta)
 
+# Scheduler sub‑block
+SCHEDULER_CFG    = SimpleNamespace(**TRAINING.scheduler)
+
 # Fine‑tuning sub‑block
 FINE_TUNE_CFG    = SimpleNamespace(**TRAINING.fine_tune)
 
@@ -61,6 +64,9 @@ HPO_CFG          = SimpleNamespace(**TRAINING.hpo)
 # Misc
 GRADIENT_CLIP    = TRAINING.gradient_clip
 SEED_EVERYTHING  = TRAINING.seed_everything
+
+NOTIFICATIONS = _cfg.get("notifications", {})
+WEBHOOK_URL = NOTIFICATIONS.get("webhook_url", None)
 
 # Paths
 CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]
