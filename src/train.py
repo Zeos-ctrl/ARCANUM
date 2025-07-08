@@ -18,7 +18,7 @@ from src.config import *
 from src.dataset import generate_data
 from src.power_monitor import PowerMonitor
 from src.model import PhaseDNN_Full, AmplitudeNet
-from src.utils import save_checkpoint, notify_slack
+from src.utils import save_checkpoint, notify_discord
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +231,6 @@ if __name__ == "__main__":
     # Execute training function
     amp_loss, phi_loss = train_and_save(CHECKPOINT_DIR)
 
-    notify_slack(
+    notify_discord(
             f"Training complete! on {NUM_SAMPLES} samples, spoiler alert amp_loss: {amp_loss} and phi_loss: {phi_loss}. \n"
     )

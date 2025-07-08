@@ -11,7 +11,7 @@ from pycbc.waveform import get_td_waveform
 # Libraries
 from src.config import *
 from src.dataset import generate_data
-from src.utils import compute_match, WaveformPredictor, notify_slack
+from src.utils import compute_match, WaveformPredictor, notify_discord
 
 logger = logging.getLogger(__name__)
 
@@ -211,6 +211,6 @@ if __name__ == "__main__":
     evaluate()
     matches = cross_correlation_fixed_q()
 
-    notify_slack(
+    notify_discord(
             f"Evaluation complete! cross correlation matches: {matches}\n"
     )

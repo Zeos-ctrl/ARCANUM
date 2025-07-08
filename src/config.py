@@ -66,7 +66,7 @@ GRADIENT_CLIP    = TRAINING.gradient_clip
 SEED_EVERYTHING  = TRAINING.seed_everything
 
 NOTIFICATIONS = _cfg.get("notifications", {})
-WEBHOOK_URL = NOTIFICATIONS.get("webhook_url", None)
+DISCORD_WEBHOOK_URL = NOTIFICATIONS.get("webhook_url", None)
 
 # Paths
 CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]
