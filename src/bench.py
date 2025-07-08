@@ -11,7 +11,7 @@ import torch
 
 from src.config import DEVICE
 from src.dataset import sample_parameters, make_waveform
-from src.utils import compute_match, WaveformPredictor, notify_slack
+from src.utils import compute_match, WaveformPredictor, notify_discord
 
 logger = logging.getLogger(__name__)
 
@@ -143,7 +143,7 @@ if __name__ == "__main__":
         json.dump(results, f, indent=2)
     logger.info("Saved benchmark results to %s", out_path)
 
-    notify_slack(
+    notify_discord(
         f"Benchmark complete! Sample counts: {sample_counts}\n"
         f"Results: {results}"
     )

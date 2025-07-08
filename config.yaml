@@ -66,7 +66,7 @@ device: "cuda"
 
 notifications:
   webhook_url:  
-    "https://hooks.slack.com/services/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"
+    "https://discord.com/api/webhooks/1392085647480721428/wDGdLRmMXrStJXhobZTjkAa4SrW35BKoRTMcdLKBFDdq-qiECTjD-2SYLa4cLL3ZU2Bx"
 
 paths:
   checkpoint_dir: "checkpoints"

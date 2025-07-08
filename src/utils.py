@@ -39,23 +39,23 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model, data):
         json.dump(meta, f)
     logger.info("Saved metadata JSON.")
 
-def notify_slack(message: str, url: str = None):
+def notify_discord(message: str, url: str = None):
     """
-    Send a notification message to Slack via Incoming Webhook.
-    If url is None, falls back to the WEBHOOK_URL from config.
+    Send a notification message to Discord via webhook.
     """
-    hook = url or WEBHOOK_URL
+    hook = url or DISCORD_WEBHOOK_URL
     if not hook:
-        logger.warning("No WEBHOOK_URL configured—skipping Slack notification.")
+        logger.warning("No DISCORD_WEBHOOK_URL configured—skipping Discord notification.")
         return
 
-    payload = {"text": message}
+    payload = {"content": message}
+    headers = {"Content-Type": "application/json"}
     try:
-        resp = requests.post(hook, json=payload, timeout=5)
+        resp = requests.post(hook, json=payload, headers=headers, timeout=5)
         resp.raise_for_status()
-        logger.info("Sent Slack notification.")
+        logger.info("Sent Discord notification.")
     except Exception as e:
-        logger.error("Failed to send Slack notification: %s", e)
+        logger.error("Failed to send Discord notification: %s", e)
 
 def compute_match(h_true, h_pred):
     """
