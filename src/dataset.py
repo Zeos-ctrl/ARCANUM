@@ -1,6 +1,7 @@
 # General Utils
 import logging
 import numpy as np
+from scipy.stats import qmc
 from scipy.signal import hilbert
 from dataclasses import dataclass
 from scipy.signal.windows import tukey
@@ -31,12 +32,35 @@ class GeneratedDataset:
     theta_norm: np.ndarray     # (NUM_SAMPLES, 6)
     t_norm_array: np.ndarray   # (WAVEFORM_LENGTH,)
 
-def sample_parameters(n, seed=None):
-    logger.debug(f"Sampling {n} parameter sets...")
+def sample_parameters(n, seed=None, method="lhs"):
+    """
+    Sample n parameter sets from either Latin Hypercube Sampling (default) or uniform random sampling.
+
+    Args:
+        n (int): Number of samples.
+        seed (int or None): Random seed for reproducibility.
+        method (str): Sampling method, either "lhs" (default) or "uniform".
+
+    Returns:
+        np.ndarray: Sampled parameters, shape (n, 6)
+    """
+    logger.debug(f"Sampling {n} parameter sets using {method} method...")
+
+    lows  = np.array([MASS_MIN, MASS_MIN, SPIN_MIN, SPIN_MIN, INCLINATION_MIN, ECC_MIN])
+    highs = np.array([MASS_MAX, MASS_MAX, SPIN_MAX, SPIN_MAX, INCLINATION_MAX, ECC_MAX])
+    dim   = 6
+
     rng = np.random.default_rng(seed)
-    lows  = [MASS_MIN, MASS_MIN, SPIN_MIN, SPIN_MIN, INCLINATION_MIN, ECC_MIN]
-    highs = [MASS_MAX, MASS_MAX, SPIN_MAX, SPIN_MAX, INCLINATION_MAX, ECC_MAX]
-    samples = rng.uniform(lows, highs, size=(n, 6))
+
+    if method == "lhs":
+        sampler = qmc.LatinHypercube(d=dim, seed=seed)
+        sample = sampler.random(n)
+        samples = qmc.scale(sample, lows, highs)
+    elif method == "uniform":
+        samples = rng.uniform(lows, highs, size=(n, dim))
+    else:
+        raise ValueError(f"Unknown sampling method: {method}")
+
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 

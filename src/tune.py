@@ -10,6 +10,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.config import *
+from src.utils import notify_slack
 from src.dataset import generate_data
 from src.model import AmplitudeNet, PhaseDNN_Full
 
@@ -207,3 +208,7 @@ if __name__ == "__main__":
 
     print("Best hyperparameters:", study.best_params)
     print("Best validation loss:", study.best_value)
+
+    notify_slack(
+            f"Tuning complete! best params: {study.best_params}, best value: {study.best_value}\n"
+    )

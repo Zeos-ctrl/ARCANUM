@@ -10,8 +10,8 @@ import plotly.graph_objects as go
 import torch
 
 from src.config import DEVICE
-from src.utils import compute_match, WaveformPredictor
 from src.dataset import sample_parameters, make_waveform
+from src.utils import compute_match, WaveformPredictor, notify_slack
 
 logger = logging.getLogger(__name__)
 
@@ -142,3 +142,8 @@ if __name__ == "__main__":
     with open(out_path, "w") as f:
         json.dump(results, f, indent=2)
     logger.info("Saved benchmark results to %s", out_path)
+
+    notify_slack(
+        f"Benchmark complete! Sample counts: {sample_counts}\n"
+        f"Results: {results}"
+    )
