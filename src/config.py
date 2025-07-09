@@ -67,6 +67,9 @@ SEED_EVERYTHING  = TRAINING.seed_everything
 
 NOTIFICATIONS = _cfg.get("notifications", {})
 DISCORD_WEBHOOK_URL = NOTIFICATIONS.get("webhook_url", None)
+DISCORD_BOT_TOKEN = NOTIFICATIONS.get("discord_bot_token")
+STATUS_CHANNEL_ID = int(NOTIFICATIONS.get("status_channel_id", 0))
+GUILD_ID          = int(NOTIFICATIONS.get("guild_id", 0))
 
 # Paths
 CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]

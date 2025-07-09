@@ -1,10 +1,10 @@
 pycbc:
   seobnrv4:
     waveform_name:   "SEOBNRv4"
-    delta_t:         1024
+    delta_t:         4096
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 1024
+    waveform_length: 4096
 
   phenomd:
     waveform_name:   "IMRPhenomPv2"
@@ -44,7 +44,7 @@ training:
   # Scheduler
   scheduler:
     lr_decay_factor: 0.5    # multiply LR by this on plateau
-    lr_patience:     10     # epochs to wait before reducing
+    lr_patience:     20     # epochs to wait before reducing
     min_lr:          1e-6   # lower bound on LR
 
   # Fine‑tuning
@@ -67,6 +67,9 @@ device: "cuda"
 notifications:
   webhook_url:  
     "https://discord.com/api/webhooks/1392085647480721428/wDGdLRmMXrStJXhobZTjkAa4SrW35BKoRTMcdLKBFDdq-qiECTjD-2SYLa4cLL3ZU2Bx"
+  discord_bot_token: "MTM5MjE0MDE1ODg1NzUxNTAxOA.GPDujQ.yM-i8yzG-p6tV0LrvpyoBdjvEjNGUgKq1LdX0U"
+  status_channel_id: 1392085614375206932
+  guild_id: 1392085562323636348
 
 paths:
   checkpoint_dir: "checkpoints"

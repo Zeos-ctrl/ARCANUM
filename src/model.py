@@ -1,20 +1,39 @@
 import torch
 import torch.nn as nn
-
 from src.config import DEVICE
 
-# MODEL DEFINITIONS (with 6‐dim parameter embedding)
+class ResidualBlock(nn.Module):
+    def __init__(self, dim, dropout=0.1):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(dim, dim),
+            nn.BatchNorm1d(dim),
+            nn.ReLU(),
+            nn.Dropout(dropout)
+        )
+    def forward(self, x):
+        return x + self.net(x)
+
 class MLP(nn.Module):
-    """Simple feedforward MLP with ReLU activations."""
-    def __init__(self, in_dim, hidden_dims, out_dim):
+    """
+    MLP with BatchNorm, Dropout, and residual skips when dims match.
+    """
+    def __init__(self, in_dim, hidden_dims, out_dim, dropout=0.1):
         super().__init__()
         layers = []
-        prev_dim = in_dim
+        prev = in_dim
         for h in hidden_dims:
-            layers.append(nn.Linear(prev_dim, h))
-            layers.append(nn.ReLU())
-            prev_dim = h
-        layers.append(nn.Linear(prev_dim, out_dim))
+            layers += [
+                nn.Linear(prev, h),
+                nn.BatchNorm1d(h),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ]
+            # if incoming and outgoing dims match, add a residual block
+            if prev == h:
+                layers.append(ResidualBlock(h, dropout=dropout))
+            prev = h
+        layers.append(nn.Linear(prev, out_dim))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
@@ -22,79 +41,81 @@ class MLP(nn.Module):
 
 class PhaseSubNet(nn.Module):
     """
-    Takes [t_norm, theta_embed] and outputs a scalar phi_i(t; θ).
-    We use N_banks=1 here.
+    Phase subnetwork with BN, Dropout, and a residual block.
     """
-    def __init__(self, input_dim, hidden_dims):
+    def __init__(self, input_dim, hidden_dims, dropout=0.1):
         super().__init__()
         layers = []
         prev = input_dim
         for h in hidden_dims:
-            layers.append(nn.Linear(prev, h))
-            layers.append(nn.ReLU())
+            layers += [
+                nn.Linear(prev, h),
+                nn.BatchNorm1d(h),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ]
+            if prev == h:
+                layers.append(ResidualBlock(h, dropout=dropout))
             prev = h
-        layers.append(nn.Linear(prev, 1))  # output: scalar phi_i
+        layers.append(nn.Linear(prev, 1))
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.net(x)  # (batch_size, 1)
+        return self.net(x)
 
 class PhaseDNN_Full(nn.Module):
     """
-    PhaseDNN that learns phi(t; θ) with θ ∈ R^6 for (m1,m2,chi1z,chi2z,incl,ecc).
+    PhaseDNN that learns φ(t; θ), with a BatchNorm+Dropout embeder and residual PhaseSubNets.
     """
-    def __init__(self, param_dim=6, time_dim=1, emb_hidden=[64, 64],
-                 phase_hidden=[128, 128, 128, 128], N_banks=1):
+    def __init__(self, param_dim=6, time_dim=1, emb_hidden=[64,64],
+                 phase_hidden=[128,128,128,128], N_banks=1, dropout=0.1):
         super().__init__()
-        self.param_dim = param_dim
-        self.time_dim  = time_dim
-        self.N_banks   = N_banks
+        self.N_banks = N_banks
 
-        # theta‐embedding network: (m1,m2,chi1z,chi2z,incl,ecc) → emb_dim=64
-        emb_dim = 64
-        self.theta_embed = MLP(param_dim, emb_hidden, emb_dim)
+        # embed θ → emb_dim, with BN and Dropout
+        emb_dim = emb_hidden[-1]
+        self.theta_embed = MLP(param_dim, emb_hidden, emb_dim, dropout=dropout)
 
-        # Phase subnets: one per bank
+        # per‐bank phase subnets
         for i in range(N_banks):
-            net_i = PhaseSubNet(input_dim = time_dim + emb_dim,
-                                hidden_dims = phase_hidden)
+            net_i = PhaseSubNet(input_dim=time_dim+emb_dim,
+                                hidden_dims=phase_hidden,
+                                dropout=dropout)
             setattr(self, f"phase_net_{i}", net_i)
 
     def forward(self, t_norm, theta):
-        """
-        t_norm: (batch_size,1)
-        theta:  (batch_size,6)
-        returns phi_total: (batch_size,1)
-        """
-        emb = self.theta_embed(theta)  # (batch_size, emb_dim)
-
-        phi_total = torch.zeros_like(t_norm).to(DEVICE)  # (batch_size,1)
+        emb = self.theta_embed(theta)           # (B, emb_dim)
+        phi_total = torch.zeros_like(t_norm).to(DEVICE)
         for i in range(self.N_banks):
             net_i = getattr(self, f"phase_net_{i}")
-            x_i = torch.cat([t_norm, emb], dim=-1)      # (batch_size,1+emb_dim)
-            phi_i = net_i(x_i)                            # (batch_size,1)
-            w_i = torch.ones_like(t_norm)
-            phi_total = phi_total + w_i * phi_i
-
-        return phi_total  # shape (batch_size, 1)
+            x_i = torch.cat([t_norm, emb], dim=-1)
+            phi_i = net_i(x_i)
+            phi_total = phi_total + phi_i
+        return phi_total
 
 class AmplitudeNet(nn.Module):
     """
-    MLP that learns the normalized amplitude A_norm(t; θ) ∈ [0,1].
-    Input: [t_norm, m1_norm, m2_norm, chi1z_norm, chi2z_norm, incl_norm, ecc_norm], Output: [0,1].
+    Amplitude MLP with BN, Dropout, and residual skips. Outputs in [0,1].
     """
-    def __init__(self, in_dim=7, hidden_dims=[128, 128, 128]):
+    def __init__(self, in_dim=7, hidden_dims=[128,128,128], dropout=0.1):
         super().__init__()
         layers = []
         prev = in_dim
         for h in hidden_dims:
-            layers.append(nn.Linear(prev, h))
-            layers.append(nn.ReLU())
+            layers += [
+                nn.Linear(prev, h),
+                nn.BatchNorm1d(h),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            ]
+            if prev == h:
+                layers.append(ResidualBlock(h, dropout=dropout))
             prev = h
-        layers.append(nn.Linear(prev, 1))
-        layers.append(nn.Sigmoid())  # force output in [0,1]
+        layers += [
+            nn.Linear(prev, 1),
+            nn.Sigmoid()
+        ]
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
-        return self.net(x)  # (batch_size, 1)
-
+        return self.net(x)
