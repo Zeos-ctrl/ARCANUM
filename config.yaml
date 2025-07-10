@@ -1,10 +1,10 @@
 pycbc:
   seobnrv4:
     waveform_name:   "SEOBNRv4"
-    delta_t:         4096
+    delta_t:         2048
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 4096
+    waveform_length: 1024
 
   phenomd:
     waveform_name:   "IMRPhenomPv2"
@@ -16,16 +16,16 @@ pycbc:
 sampling_ranges:
   mass_min:     20.0
   mass_max:     50.0
-  spin_mag_min: -0.99
-  spin_mag_max:  0.99
+  spin_mag_min: -0.01
+  spin_mag_max:  0.01
   incl_min:      0.0
-  incl_max:      3.141592653589793
+  incl_max:      0.01
   ecc_min:       0.0
-  ecc_max:       0.9
+  ecc_max:       0.01
 
 training:
   # Data & splitting
-  num_samples:    10
+  num_samples:    100
   val_split:      0.2
   random_seed:    42
 
@@ -43,9 +43,9 @@ training:
 
   # Scheduler
   scheduler:
-    lr_decay_factor: 0.5    # multiply LR by this on plateau
-    lr_patience:     20     # epochs to wait before reducing
-    min_lr:          1e-6   # lower bound on LR
+    lr_decay_factor: 0.5
+    lr_patience:     10
+    min_lr:          1e-6
 
   # Fine‑tuning
   fine_tune:
