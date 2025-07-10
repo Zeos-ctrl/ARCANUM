@@ -12,7 +12,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from src.config import *
 from src.utils import notify_discord
 from src.dataset import generate_data
-from src.model import AmplitudeNet, PhaseDNN_Full
+from src.model import AmplitudeDNN_Full, PhaseDNN_Full
 
 # Silence wench
 warnings.filterwarnings(
@@ -36,110 +36,177 @@ def train_and_eval(
     patience,
     device,
 ):
-    # Log hyperparameters at start
     logger.debug(
-        "Starting train_and_eval with lr=%.3e, batch_size=%d, amp_hidden=%s, phase_hidden=%s, "
+        "train_and_eval: lr=%.3e, batch_size=%d, amp_hidden=%s, phase_hidden=%s, "
         "num_epochs=%d, patience=%d, device=%s",
         learning_rate, batch_size, amp_hidden_dims, phase_hidden_dims,
         num_epochs, patience, device
     )
 
-    # Prepare data
-    inputs   = torch.from_numpy(data.inputs).to(device)
-    A_tgts   = torch.from_numpy(data.targets_A).to(device)
-    phi_tgts = torch.from_numpy(data.targets_phi).to(device)
-    logger.debug("Loaded data tensors: inputs=%s, targets_A=%s, targets_phi=%s",
-                 inputs.shape, A_tgts.shape, phi_tgts.shape)
+    # Prepare tensors
+    X       = torch.from_numpy(data.inputs).to(device)
+    A_tgts  = torch.from_numpy(data.targets_A).to(device)
+    phi_tgts= torch.from_numpy(data.targets_phi).to(device)
 
-    idx = np.arange(inputs.size(0))
-    train_idx, val_idx = train_test_split(
-        idx, test_size=0.2, random_state=42, shuffle=True
-    )
-    logger.debug("Split indices: train=%d, val=%d", len(train_idx), len(val_idx))
+    idx = np.arange(X.size(0))
+    train_idx, val_idx = train_test_split(idx, test_size=0.2, random_state=42, shuffle=True)
 
-    train_ds = TensorDataset(inputs[train_idx], A_tgts[train_idx], phi_tgts[train_idx])
-    val_ds   = TensorDataset(inputs[val_idx],   A_tgts[val_idx],   phi_tgts[val_idx])
+    train_ds = TensorDataset(X[train_idx], A_tgts[train_idx], phi_tgts[train_idx])
+    val_ds   = TensorDataset(X[val_idx],   A_tgts[val_idx],   phi_tgts[val_idx])
 
     train_loader = DataLoader(train_ds, batch_size=batch_size, shuffle=True)
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
-    logger.debug("Built DataLoaders with batch_size=%d", batch_size)
 
     # Build models
-    amp_model = AmplitudeNet(in_dim=7, hidden_dims=amp_hidden_dims).to(device)
+    amp_model = AmplitudeDNN_Full(
+        in_param_dim=6, time_dim=1,
+        emb_hidden=[64,64],
+        amp_hidden=amp_hidden_dims,
+        N_banks=banks
+    ).to(device)
+
     phase_model = PhaseDNN_Full(
         param_dim=6, time_dim=1,
         emb_hidden=[64,64],
         phase_hidden=phase_hidden_dims,
         N_banks=banks
     ).to(device)
-    logger.debug("Instantiated models: AmplitudeNet(%s), PhaseDNN_Full(%s)",
-                 amp_hidden_dims, phase_hidden_dims)
 
-    optimizer = torch.optim.Adam(
-        list(amp_model.parameters()) + list(phase_model.parameters()),
-        lr=learning_rate
-    )
     criterion = nn.MSELoss()
 
-    best_val = float("inf")
-    wait = 0
+    # Stage 1: amplitude only
+    logger.info("Stage 1: training amplitude network only")
+    for p in phase_model.parameters():
+        p.requires_grad = False
 
-    # Training loop
+    optimizer_amp = torch.optim.Adam(amp_model.parameters(), lr=learning_rate)
+    best_val_amp, wait_amp, best_state_amp = float('inf'), 0, None
+
     for epoch in range(1, num_epochs+1):
-        amp_model.train(); phase_model.train()
-        for x, A_true, phi_true in train_loader:
+        amp_model.train()
+        running_loss = 0.0; cnt=0
+        for x, A_true, _ in train_loader:
+            x, A_true = x.to(device), A_true.to(device)
             t_norm, theta = x[:, :1], x[:, 1:]
+            A_pred = amp_model(t_norm, theta)   
+            loss = criterion(A_pred, A_true)
+            optimizer_amp.zero_grad()
+            loss.backward()
+            optimizer_amp.step()
+            bs = x.size(0)
+            running_loss += loss.item()*bs; cnt+=bs
+        train_loss = running_loss / cnt
+
+        # Validate
+        amp_model.eval()
+        val_loss = 0.0; cnt = 0
+        with torch.no_grad():
+            for x, A_true, _ in val_loader:
+                x, A_true = x.to(device), A_true.to(device)
+                t_norm, theta = x[:, :1], x[:, 1:]
+                A_pred = amp_model(t_norm, theta)   
+                loss = criterion(A_pred, A_true)
+                bs = x.size(0)
+                val_loss += loss.item()*bs; cnt+=bs
+        val_loss /= cnt
+
+        logger.debug(f"AMP Epoch {epoch}: val_loss={val_loss:.3e}")
+        trial = getattr(train_and_eval, "_current_trial", None)
+        if trial:
+            trial.report(val_loss, epoch)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+        if val_loss < best_val_amp - 1e-12:
+            best_val_amp = val_loss; wait_amp = 0
+            best_state_amp = amp_model.state_dict()
+        else:
+            wait_amp += 1
+            if wait_amp >= patience:
+                logger.info(f"AMP early stopping at epoch {epoch}")
+                break
+
+    if best_state_amp:
+        amp_model.load_state_dict(best_state_amp)
+        logger.info("Restored best amplitude model")
+
+    # Stage 2: phase only
+    logger.info("Stage 2: training phase network only")
+    for p in amp_model.parameters():
+        p.requires_grad = False
+    for p in phase_model.parameters():
+        p.requires_grad = True
+
+    optimizer_phi = torch.optim.Adam(phase_model.parameters(), lr=learning_rate)
+    best_val_phi, wait_phi, best_state_phi = float('inf'), 0, None
+
+    for epoch in range(1, num_epochs+1):
+        phase_model.train()
+        running_loss = 0.0; cnt=0
+        for x, _, phi_true in train_loader:
+            x, phi_true = x.to(device), phi_true.to(device)
+            t_norm, theta = x[:,:1], x[:,1:]
+            phi_pred = phase_model(t_norm, theta)
+            loss = criterion(phi_pred, phi_true)
+            optimizer_phi.zero_grad()
+            loss.backward()
+            optimizer_phi.step()
+            bs = x.size(0)
+            running_loss += loss.item()*bs; cnt+=bs
+        train_loss = running_loss / cnt
+
+        # Validate
+        phase_model.eval()
+        val_loss = 0.0; cnt=0
+        with torch.no_grad():
+            for x, _, phi_true in val_loader:
+                x, phi_true = x.to(device), phi_true.to(device)
+                t_norm, theta = x[:,:1], x[:,1:]
+                phi_pred = phase_model(t_norm, theta)
+                loss = criterion(phi_pred, phi_true)
+                bs = x.size(0)
+                val_loss += loss.item()*bs; cnt+=bs
+        val_loss /= cnt
+
+        logger.debug(f"PHASE Epoch {epoch}: val_loss={val_loss:.3e}")
+        if trial:
+            trial.report(val_loss, num_epochs + epoch)
+            if trial.should_prune():
+                raise optuna.TrialPruned()
+
+        if val_loss < best_val_phi - 1e-12:
+            best_val_phi = val_loss; wait_phi = 0
+            best_state_phi = phase_model.state_dict()
+        else:
+            wait_phi += 1
+            if wait_phi >= patience:
+                logger.info(f"PHASE early stopping at epoch {epoch}")
+                break
+
+    if best_state_phi:
+        phase_model.load_state_dict(best_state_phi)
+        logger.info("Restored best phase model")
+
+    # Final combined evaluation on validation set
+    amp_model.eval(); phase_model.eval()
+    combined_val = 0.0; cnt = 0
+    with torch.no_grad():
+        for x, A_true, phi_true in val_loader:
+            x, A_true, phi_true = x.to(device), A_true.to(device), phi_true.to(device)
+            t_norm, theta = x[:,:1], x[:,1:]
             A_pred   = amp_model(x)
             phi_pred = phase_model(t_norm, theta)
             loss = criterion(A_pred, A_true) + criterion(phi_pred, phi_true)
+            bs = x.size(0)
+            combined_val += loss.item()*bs; cnt+=bs
+    combined_val /= cnt
 
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        # Validation
-        amp_model.eval()
-        phase_model.eval()
-        val_loss = 0.0
-        count = 0
-        with torch.no_grad():
-            for x, A_true, phi_true in val_loader:
-                t_norm, theta = x[:, :1], x[:, 1:]
-                A_pred   = amp_model(x)
-                phi_pred = phase_model(t_norm, theta)
-                loss = criterion(A_pred, A_true) + criterion(phi_pred, phi_true)
-                val_loss += loss.item() * x.size(0)
-                count += x.size(0)
-        val_loss /= count
-
-        logger.debug("Epoch %d: validation loss = %.3e", epoch, val_loss)
-
-        # Report to Optuna
-        trial = getattr(train_and_eval, "_current_trial", None)
-        if trial is not None:
-            trial.report(val_loss, epoch)
-            if trial.should_prune():
-                logger.debug("Pruning trial at epoch %d with val_loss=%.3e", epoch, val_loss)
-                raise optuna.TrialPruned()
-
-        # Early stopping
-        if val_loss < best_val - 1e-12:
-            best_val = val_loss
-            wait = 0
-            logger.debug("New best_val = %.3e (reset patience)", best_val)
-        else:
-            wait += 1
-            logger.debug("No improvement (wait=%d/%d)", wait, patience)
-            if wait >= patience:
-                logger.info("Early stopping at epoch %d: best_val=%.3e", epoch, best_val)
-                break
-
-    # Final report for this trial
     logger.info(
-        "Trial finished: amp_hidden=%s, phase_hidden=%s, lr=%.3e, batch_size=%d → val_loss=%.3e",
-        amp_hidden_dims, phase_hidden_dims, learning_rate, batch_size, best_val
+        "Finished trial: amp_hidden=%s, phase_hidden=%s, lr=%.3e, batch_size=%d → combined_val=%.3e",
+        amp_hidden_dims, phase_hidden_dims, learning_rate, batch_size, combined_val
     )
-    return best_val
+
+    return combined_val
 
 def objective(trial):
     # Suggest hyperparameters

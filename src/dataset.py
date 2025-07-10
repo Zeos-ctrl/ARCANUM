@@ -13,7 +13,6 @@ from pycbc.psd import aLIGOZeroDetHighPower
 
 # Libraries
 from src.config import *
-from src.model import PhaseDNN_Full, AmplitudeNet
 
 logger = logging.getLogger(__name__)
 
@@ -126,11 +125,11 @@ def generate_data(clean: bool = True, samples: int = NUM_SAMPLES, alpha: float =
             start, end = nz[0], nz[-1] + 1
             seg_len = end - start
 
-            # Build a segment‑length Tukey and embed it into a full‑length mask
+            # Build Tukey
             window = np.zeros(WAVEFORM_LENGTH)
             window[start:end] = tukey(seg_len, alpha=alpha)
 
-            # Apply it (zeros stay zeros, nonzero region fades in/out)
+            # Apply the window
             h = h * window
 
         analytic = hilbert(h)

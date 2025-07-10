@@ -1,3 +1,5 @@
+# train_and_save.py
+
 # Pytorch and ml
 import torch
 import torch.nn as nn
@@ -17,220 +19,244 @@ import matplotlib.pyplot as plt
 from src.config import *
 from src.dataset import generate_data
 from src.power_monitor import PowerMonitor
-from src.model import PhaseDNN_Full, AmplitudeNet
+from src.model import PhaseDNN_Full, AmplitudeDNN_Full
 from src.utils import save_checkpoint, notify_discord
 
 logger = logging.getLogger(__name__)
 
+
+def make_loaders(data):
+    """Generate train/val loaders for amplitude & phase."""
+    X = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total,7)
+    A = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total,1)
+    phi = torch.from_numpy(data.targets_phi).to(DEVICE)  # (N_total,1)
+
+    idx = list(range(X.size(0)))
+    train_idx, val_idx = train_test_split(
+        idx, test_size=VAL_SPLIT,
+        random_state=RANDOM_SEED, shuffle=True
+    )
+
+    train_ds_amp = TensorDataset(X[train_idx], A[train_idx])
+    val_ds_amp   = TensorDataset(X[val_idx],   A[val_idx])
+    train_ds_phi = TensorDataset(X[train_idx], phi[train_idx])
+    val_ds_phi   = TensorDataset(X[val_idx],   phi[val_idx])
+    train_ds_joint = TensorDataset(X[train_idx], A[train_idx], phi[train_idx])
+    val_ds_joint   = TensorDataset(X[val_idx],   A[val_idx], phi[val_idx])
+
+    loaders = {
+        'amp': {
+            'train': DataLoader(train_ds_amp,   batch_size=BATCH_SIZE, shuffle=True),
+            'val':   DataLoader(val_ds_amp,     batch_size=BATCH_SIZE, shuffle=False)
+        },
+        'phase': {
+            'train': DataLoader(train_ds_phi,   batch_size=BATCH_SIZE, shuffle=True),
+            'val':   DataLoader(val_ds_phi,     batch_size=BATCH_SIZE, shuffle=False)
+        },
+        'joint': {
+            'train': DataLoader(train_ds_joint, batch_size=BATCH_SIZE, shuffle=True),
+            'val':   DataLoader(val_ds_joint,   batch_size=BATCH_SIZE, shuffle=False)
+        }
+    }
+    return loaders
+
+
+def train_amp_only(amp_model, loaders, checkpoint_dir):
+    logger.info("Stage 1: training amplitude network only")
+    # Freeze phase net entirely
+    optimizer = optim.Adam(amp_model.parameters(), lr=LEARNING_RATE)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode="min",
+        factor=float(SCHEDULER_CFG.lr_decay_factor),
+        patience=int(SCHEDULER_CFG.lr_patience),
+        min_lr=float(SCHEDULER_CFG.min_lr)
+    )
+    best_val = float('inf')
+    best_state = None
+    wait = 0
+    criterion = nn.MSELoss()
+
+    for epoch in range(1, NUM_EPOCHS + 1):
+        # Train
+        amp_model.train()
+        train_loss = 0.0; cnt = 0
+        for X, A in tqdm(loaders['amp']['train'], desc=f"E{epoch} AMP Train", leave=False):
+            X, A = X.to(DEVICE), A.to(DEVICE)
+            t_norm, theta = X[:,:1], X[:,1:]
+            A_pred = amp_model(t_norm, theta)
+            loss = criterion(A_pred, A)
+            optimizer.zero_grad(); loss.backward()
+            nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
+            optimizer.step()
+            bs = X.size(0)
+            train_loss += loss.item()*bs; cnt += bs
+        train_loss /= cnt
+
+        # Validate
+        amp_model.eval()
+        val_loss = 0.0; cnt = 0
+        with torch.no_grad():
+            for X, A in loaders['amp']['val']:
+                X, A = X.to(DEVICE), A.to(DEVICE)
+                t_norm, theta = X[:,:1], X[:,1:]
+                loss = criterion(amp_model(t_norm, theta), A)
+                bs = X.size(0)
+                val_loss += loss.item()*bs; cnt += bs
+        val_loss /= cnt
+        scheduler.step(val_loss)
+
+        # Checkpoint / early stop
+        if val_loss < best_val - MIN_DELTA:
+            best_val = val_loss; wait = 0
+            best_state = amp_model.state_dict()
+            torch.save(best_state, os.path.join(checkpoint_dir, "amp_best.pt"))
+            logger.info(f"Epoch {epoch}: AMP val improved to {val_loss:.3e}")
+        else:
+            wait += 1
+            if wait >= PATIENCE:
+                logger.info(f"AMP early stopping at epoch {epoch}")
+                break
+
+        tqdm.write(f"AMP Epoch {epoch} | Train={train_loss:.3e} | Val={val_loss:.3e}")
+
+    # Restore best
+    if best_state:
+        amp_model.load_state_dict(best_state)
+        logger.info("Restored AMP best model")
+    return amp_model
+
+
+def train_phase_only(phase_model, loaders, checkpoint_dir):
+    logger.info("Stage 2: training phase network only")
+    optimizer = optim.Adam(phase_model.parameters(), lr=LEARNING_RATE)
+    scheduler = ReduceLROnPlateau(
+        optimizer, mode="min",
+        factor=float(SCHEDULER_CFG.lr_decay_factor),
+        patience=int(SCHEDULER_CFG.lr_patience),
+        min_lr=float(SCHEDULER_CFG.min_lr)
+    )
+    best_val = float('inf')
+    best_state = None
+    wait = 0
+    criterion = nn.MSELoss()
+
+    for epoch in range(1, NUM_EPOCHS + 1):
+        # Train
+        phase_model.train()
+        train_loss = 0.0; cnt = 0
+        for X, phi in tqdm(loaders['phase']['train'], desc=f"E{epoch} PHASE Train", leave=False):
+            X, phi = X.to(DEVICE), phi.to(DEVICE)
+            t_norm, theta = X[:, :1], X[:, 1:]
+            phi_pred = phase_model(t_norm, theta)
+            loss = criterion(phi_pred, phi)
+            optimizer.zero_grad(); loss.backward()
+            nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
+            optimizer.step()
+            bs = X.size(0)
+            train_loss += loss.item()*bs; cnt += bs
+        train_loss /= cnt
+
+        # Validate
+        phase_model.eval()
+        val_loss = 0.0; cnt = 0
+        with torch.no_grad():
+            for X, phi in loaders['phase']['val']:
+                X, phi = X.to(DEVICE), phi.to(DEVICE)
+                t_norm, theta = X[:, :1], X[:, 1:]
+                loss = criterion(phase_model(t_norm, theta), phi)
+                bs = X.size(0)
+                val_loss += loss.item()*bs; cnt += bs
+        val_loss /= cnt
+        scheduler.step(val_loss)
+
+        # Checkpoint / early stop
+        if val_loss < best_val - MIN_DELTA:
+            best_val = val_loss; wait = 0
+            best_state = phase_model.state_dict()
+            torch.save(best_state, os.path.join(checkpoint_dir, "phase_best.pt"))
+            logger.info(f"Epoch {epoch}: PHASE val improved to {val_loss:.3e}")
+        else:
+            wait += 1
+            if wait >= PATIENCE:
+                logger.info(f"PHASE early stopping at epoch {epoch}")
+                break
+
+        tqdm.write(f"PHASE Epoch {epoch} | Train={train_loss:.3e} | Val={val_loss:.3e}")
+
+    # Restore best
+    if best_state:
+        phase_model.load_state_dict(best_state)
+        logger.info("Restored PHASE best model")
+    return phase_model
+
+
 def train_and_save(checkpoint_dir: str = "checkpoints"):
     with PowerMonitor(interval=1.0) as power:
         os.makedirs(checkpoint_dir, exist_ok=True)
-        logger.info("Checkpoint directory created at: %s", checkpoint_dir)
+        logger.info("Checkpoint directory: %s", checkpoint_dir)
 
+        # Generate data & loaders
         data = generate_data(clean=False)
-        logger.info("Data generated.")
+        loaders = make_loaders(data)
 
-        # Convert to torch tensors
-        inputs_tensor    = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total, 7)
-        targets_A_tensor   = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total, 1)
-        targets_phi_tensor = torch.from_numpy(data.targets_phi).to(DEVICE) # (N_total, 1)
-        logger.debug("Input tensor shape: %s", inputs_tensor.shape)
-
-        # train/val split
-        train_idx, val_idx = train_test_split(
-            list(range(inputs_tensor.size(0))),
-            test_size=VAL_SPLIT, random_state=RANDOM_SEED, shuffle=True
-        )
-        logger.info("Split data: %d train / %d val", len(train_idx), len(val_idx))
-
-        train_ds = TensorDataset(inputs_tensor[train_idx], targets_A_tensor[train_idx], targets_phi_tensor[train_idx])
-        val_ds   = TensorDataset(inputs_tensor[val_idx], targets_A_tensor[val_idx], targets_phi_tensor[val_idx])
-
-        train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True)
-        val_loader   = DataLoader(val_ds,   batch_size=BATCH_SIZE, shuffle=False)
-
-        logger.info("Training on %d samples, validating on %d samples.", len(train_idx), len(val_idx))
-
-        # Instantiate models
-        phase_model = PhaseDNN_Full(
-            param_dim    = 6,
-            time_dim     = 1,
-            emb_hidden   = [64, 64],            # embedding layers for theta
-            phase_hidden = [128, 128, 128, 128], # depth
-            N_banks      = 1
+        # Instantiate fresh models
+        amp_model = AmplitudeDNN_Full(
+            in_param_dim=6,
+            time_dim=1,
+            emb_hidden=(64,64),
+            amp_hidden=(128,128,128),
+            N_banks=2,
+            dropout=0.1
         ).to(DEVICE)
 
-        amp_model = AmplitudeNet(in_dim=7, hidden_dims=[128, 128, 128]).to(DEVICE)
+        phase_model = PhaseDNN_Full(
+                param_dim=6,
+                time_dim=1,
+                emb_hidden=[64,64],
+                phase_hidden=[128,128,128,128],
+                N_banks=1,
+                dropout=0.1
+        ).to(DEVICE)
 
-        logger.info("Phase and amplitude models instantiated.")
+        # Stage 1: amplitude alone
+        amp_model = train_amp_only(amp_model, loaders, checkpoint_dir)
 
-        optimizer = optim.Adam(
-            list(phase_model.parameters()) + list(amp_model.parameters()),
-            lr = LEARNING_RATE
-        )
-        criterion = nn.MSELoss()
+        # Stage 2: phase alone
+        phase_model = train_phase_only(phase_model, loaders, checkpoint_dir)
 
-        scheduler = ReduceLROnPlateau(
-            optimizer,
-            mode="min",
-            factor=float(SCHEDULER_CFG.lr_decay_factor),
-            patience=int(SCHEDULER_CFG.lr_patience),
-            min_lr=float(SCHEDULER_CFG.min_lr),
-        )
+        # Save final combined checkpoint
+        save_checkpoint(checkpoint_dir, amp_model, phase_model, data)
+        logger.info("Saved final checkpoint (amp+phase)")
 
-        # Early stopping & checkpointing
-        best_val   = float('inf')
-        best_state = None
-        wait       = 0
-
-        torch.nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
-        torch.nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
-
-        logger.info("Starting training...")
-        for epoch in range(1, NUM_EPOCHS + 1):
-            # --- Train ---
-            phase_model.train()
-            amp_model.train()
-
-            train_amp_loss = train_phi_loss = 0.0
-            train_count    = 0
-
-            for x, A_true, phi_true in tqdm(train_loader, desc=f"E{epoch} Train", leave=False):
-                x, A_true, phi_true = x.to(DEVICE), A_true.to(DEVICE), phi_true.to(DEVICE)
-                t_norm, theta = x[:, :1], x[:, 1:]
-
-                # forward + loss
-                A_pred   = amp_model(x)
-                phi_pred = phase_model(t_norm, theta)
-                loss_amp = F.mse_loss(A_pred,   A_true)
-                loss_phi = F.mse_loss(phi_pred, phi_true)
-                loss     = loss_amp + loss_phi
-
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-
-                bs = x.size(0)
-                train_amp_loss += loss_amp.item() * bs
-                train_phi_loss += loss_phi.item() * bs
-                train_count    += bs
-
-            train_amp_loss /= train_count
-            train_phi_loss /= train_count
-
-            # --- Validate ---
-            phase_model.eval()
-            amp_model.eval()
-
-            val_amp_loss = val_phi_loss = 0.0
-            val_count    = 0
-
-            with torch.no_grad():
-                for x, A_true, phi_true in tqdm(val_loader, desc=f"E{epoch} Val", leave=False):
-                    x, A_true, phi_true = x.to(DEVICE), A_true.to(DEVICE), phi_true.to(DEVICE)
-                    t_norm, theta = x[:, :1], x[:, 1:]
-
-                    A_pred   = amp_model(x)
-                    phi_pred = phase_model(t_norm, theta)
-
-                    val_amp_loss += F.mse_loss(A_pred,   A_true).item() * x.size(0)
-                    val_phi_loss += F.mse_loss(phi_pred, phi_true).item() * x.size(0)
-                    val_count    += x.size(0)
-
-            val_amp_loss /= val_count
-            val_phi_loss /= val_count
-            total_val = val_amp_loss + val_phi_loss
-
-            # --- Scheduler step ---
-            scheduler.step(total_val)  
-
-            # --- Early stopping & checkpointing ---
-            if total_val < best_val - MIN_DELTA:
-                best_val   = total_val
-                wait       = 0
-                best_state = {
-                    'phase': phase_model.state_dict(),
-                    'amp':   amp_model.state_dict(),
-                }
-                torch.save(best_state, os.path.join(checkpoint_dir, "best.pt"))
-                logger.info(
-                    "Epoch %d: val improved to %.3e – checkpoint saved",
-                    epoch, total_val
-                )
-            else:
-                wait += 1
-                logger.debug("Epoch %d: no improvement (wait=%d/%d)", epoch, wait, PATIENCE)
-                if wait >= PATIENCE:
-                    logger.info(
-                        "Early stopping at epoch %d (no improvement for %d epochs)",
-                        epoch, PATIENCE
-                    )
-                    break
-
-            # --- Log epoch metrics ---
-            tqdm.write(
-                f"Epoch {epoch:3d} | "
-                f"Train A={train_amp_loss:.3e}, phi={train_phi_loss:.3e} | "
-                f"Val   A={val_amp_loss:.3e}, phi={val_phi_loss:.3e} | "
-                f"LR={optimizer.param_groups[0]['lr']:.2e}"
-            )
-
-        # --- Restore best model ---
-        if best_state is not None:
-            phase_model.load_state_dict(best_state['phase'])
-            amp_model.load_state_dict(best_state['amp'])
-            logger.info("Restored best model from checkpoint.")
-
-        logger.info("Training complete.")
-
-        save_checkpoint("checkpoints", amp_model, phase_model, data)
-        logger.info("Final model checkpoint saved.")
-
-        train_params = data.thetas
-
+        # Plot parameter distributions
         os.makedirs("plots/training", exist_ok=True)
-
-        labels = ["m1", "m2", "chi1z", "chi2z", "incl", "ecc"]
-        fig, axes = plt.subplots(2, 3, figsize=(16, 8))
-
+        labels = ["m1","m2","chi1z","chi2z","incl","ecc"]
+        fig, axes = plt.subplots(2, 3, figsize=(16,8))
         for i, ax in enumerate(axes.flat):
-            ax.hist(train_params[:, i], bins=30, color="steelblue", alpha=0.7)
-            ax.set_title(f"{labels[i]} Distribution")
-            ax.set_xlabel(labels[i])
-            ax.set_ylabel("Count")
-
+            ax.hist(data.thetas[:,i], bins=30, alpha=0.7)
+            ax.set_title(f"{labels[i]} dist")
         plt.tight_layout()
         plt.savefig("plots/training/parameter_distributions.png")
         plt.close()
-
-        logger.info("Saved parameter distribution plot to plots/training/parameter_distributions.png.")
+        logger.info("Saved parameter distributions plot")
 
     stats = power.summary()
-    logger.info(
-        "GPU Power Usage (W): mean=%.2f, max=%.2f, min=%.2f over %d samples",
-        stats['mean_w'], stats['max_w'], stats['min_w'], stats['num_samples']
-    )
+    logger.info("Power: mean=%.2fW, max=%.2fW, min=%.2fW over %d samples",
+                stats['mean_w'], stats['max_w'], stats['min_w'], stats['num_samples'])
 
-    return val_amp_loss, val_phi_loss
-
+    return 
 
 if __name__ == "__main__":
-
-    # Logging
     os.makedirs("logs", exist_ok=True)
-
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         handlers=[
-            logging.StreamHandler(),                       # Console output
-            logging.FileHandler("logs/training.log", mode='a'),  # Log file inside logs/
+            logging.StreamHandler(),
+            logging.FileHandler("logs/training.log", mode='a')
         ]
     )
 
-    # Execute training function
-    amp_loss, phi_loss = train_and_save(CHECKPOINT_DIR)
+    train_and_save(CHECKPOINT_DIR)
+    notify_discord("3‑stage training complete!")
 
-    notify_discord(
-            f"Training complete! on {NUM_SAMPLES} samples, spoiler alert amp_loss: {amp_loss} and phi_loss: {phi_loss}. \n"
-    )

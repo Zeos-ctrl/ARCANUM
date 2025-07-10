@@ -100,7 +100,14 @@ class WaveformPredictor:
             self.logger.warning("Meta file missing, using default waveform_length and delta_t")
 
         # Build models (must match architecture used in training)
-        self.amp_model = AmplitudeNet(in_dim=7, hidden_dims=[128,128,128])
+        self.amp_model = AmplitudeDNN_Full(
+            in_param_dim=6,
+            time_dim=1,
+            emb_hidden=(64,64),
+            amp_hidden=(128,128,128),
+            N_banks=2,
+            dropout=0.1
+        ).to(DEVICE)
         self.phase_model = PhaseDNN_Full(
             param_dim=6, time_dim=1,
             emb_hidden=[64,64],
@@ -144,7 +151,7 @@ class WaveformPredictor:
         with torch.no_grad():
             inp_t = torch.from_numpy(inp).to(self.device)
             amp_pred_n = (
-                self.amp_model(inp_t)
+                self.amp_model(inp_t[:,:1], inp_t[:,1:])
                 .cpu().numpy()
                 .ravel()
             )
@@ -182,7 +189,7 @@ class WaveformPredictor:
 
             with torch.no_grad():
                 inp_t     = torch.from_numpy(inp).to(self.device)
-                amp_n     = self.amp_model(inp_t).cpu().numpy() \
+                amp_n     = self.amp_model(inp_t[:, :1], inp_t[:, 1:]).cpu().numpy() \
                               .reshape(end - start, L)
                 phi_n     = self.phase_model(inp_t[:, :1], inp_t[:, 1:]) \
                               .cpu().numpy().reshape(end - start, L)
