@@ -30,6 +30,7 @@ def train_and_eval(
     amp_hidden_dims,
     phase_hidden_dims,
     banks,
+    dropout,
     learning_rate,
     batch_size,
     num_epochs,
@@ -59,17 +60,19 @@ def train_and_eval(
 
     # Build models
     amp_model = AmplitudeDNN_Full(
-        in_param_dim=5, time_dim=1,
+        in_param_dim=len(TRAIN_FEATURES), time_dim=1,
         emb_hidden=[64,64],
         amp_hidden=amp_hidden_dims,
-        N_banks=banks
+        N_banks=banks,
+        dropout=dropout
     ).to(device)
 
     phase_model = PhaseDNN_Full(
-        param_dim=5, time_dim=1,
+        param_dim=len(TRAIN_FEATURES), time_dim=1,
         emb_hidden=[64,64],
         phase_hidden=phase_hidden_dims,
-        N_banks=banks
+        N_banks=banks,
+        dropout=dropout
     ).to(device)
 
     criterion = nn.MSELoss()
@@ -215,6 +218,7 @@ def objective(trial):
     amp_size  = trial.suggest_categorical("amp_hidden_size", (64, 128, 256))
     phase_size= trial.suggest_categorical("phase_hidden_size", (64, 128))
     banks = trial.suggest_categorical("banks", [1,2,3,4])
+    dropout = trial.suggest_categorical("dropout", [0.0,0.1,0.2,0.3])
  
     amp_h      = [amp_size] * 3
     phase_h    = [phase_size] * 4
@@ -227,6 +231,7 @@ def objective(trial):
             amp_hidden_dims=amp_h,
             phase_hidden_dims=phase_h,
             banks=banks,
+            dropout=dropout,
             learning_rate=lr,
             batch_size=bs,
             num_epochs=TRAINING.num_epochs,

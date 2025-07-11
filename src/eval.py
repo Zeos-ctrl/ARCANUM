@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import hilbert
+import matplotlib.ticker as mticker
 
 # PyCBC waveform
 from pycbc.waveform import get_td_waveform
@@ -15,73 +16,130 @@ from src.utils import compute_match, WaveformPredictor, notify_discord
 
 logger = logging.getLogger(__name__)
 
+def pi_formatter(x, pos):
+    """Format multiples of pi nicely."""
+    # how many pi is this?
+    m = x / np.pi
+    # round to nearest half‐integer
+    m_rounded = np.round(m * 2) / 2
+    if m_rounded == 0:
+        return "0"
+    # express as fraction
+    num, den = int(np.round(m_rounded * 2)), 2
+    # if it's an integer multiple
+    if num % den == 0:
+        k = num // den
+        return rf"${k}\pi$" if k != 1 else r"$\pi$"
+    else:
+        # we have an odd numerator
+        k = num
+        return rf"$\dfrac{{{k}}}{{{den}}}\pi$"
+
 def evaluate():
-    logger.info("Starting waveform evaluation and visualization...")
+    logger.info("Starting single‐waveform evaluation and visualization…")
     pred = WaveformPredictor("checkpoints", device=DEVICE)
-    data = generate_data()
+    data = generate_data(samples=10)
 
-    logger.debug("Dataset generated. Selecting random samples for plotting.")
-    K = 3
-    indices = np.random.choice(NUM_SAMPLES, K, replace=False)
-    logger.debug(f"Selected indices: {indices.tolist()}")
+    i = np.random.randint(0, 10)
+    m1, m2, chi1z, chi2z, incl, ecc = data.thetas[i]
+    title_str = (f"m1={m1:.1f}, m2={m2:.1f}, "
+                 f"χ1z={chi1z:.2f}, χ2z={chi2z:.2f}, "
+                 f"incl={incl:.2f}, ecc={ecc:.2f}")
+    logger.info(f"Evaluating for parameters: {title_str}")
 
-    _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
+    # time grid & true targets
     time = data.time_unscaled
     L = len(time)
+    amp_true_norm = data.targets_A.reshape(10, L)[i]
+    phi_true      = data.targets_phi.reshape(10, L)[i]
+    amp_true      = pred.inverse_log_norm(amp_true_norm)
+    h_true        = amp_true * np.cos(phi_true)
 
-    for row, i in enumerate(indices):
-        # Unpack parameters and get true log-norm amplitude & phase
-        m1, m2, c1z, c2z, incl, ecc = data.thetas[i]
-        amp_true_norm = data.targets_A.reshape(NUM_SAMPLES, L)[i]
-        phi_true      = data.targets_phi.reshape(NUM_SAMPLES, L)[i]
+    # model prediction
+    t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, chi1z, chi2z, incl, ecc)
+    h_pred      = amp_pred * np.cos(phi_pred)
 
-        # Predict normalized log-amplitude and phase
-        t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl, ecc)
+    # wrapped phase and residuals
+    phi_wr_true = np.mod(phi_true, 2*np.pi)
+    phi_wr_pred = np.mod(phi_pred, 2*np.pi)
+    # wrap residual
+    dphi = phi_pred - phi_true
+    phi_res_wrapped = (dphi + np.pi) % (2*np.pi) - np.pi
 
-        # Inverse-log-normalize amplitudes into physical units
-        amp_true = pred.inverse_log_norm(amp_true_norm)
+    # set up figure: 2 rows × 4 cols
+    fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharex=True)
+    fig.suptitle(f"{title_str}", fontsize=16)
 
-        # Reconstruct strains
-        h_pred = amp_pred * np.cos(phi_pred)
-        h_true = amp_true * np.cos(phi_true)
+    # Top row: true vs pred
+    ax = axes[0,0]
+    ax.plot(time, h_true,     label="True", linewidth=1)
+    ax.plot(time, h_pred, "--",label="Pred", linewidth=1)
+    ax.set_title("Strain $h_+(t)$")
+    ax.set_ylabel("Strain")
+    ax.legend()
 
-        # Plot Strain
-        ax = axs[row, 0]
-        ax.plot(time, h_true, label="True $h_+(t)$", linewidth=1)
-        ax.plot(time, h_pred, "--", label="Predicted $h_+(t)$", linewidth=1)
-        if row == 0:
-            ax.set_title("Strain")
-        ax.set_ylabel("Strain")
-        ax.legend(loc="upper left")
+    # Amplitude
+    ax = axes[0,1]
+    ax.plot(time, amp_true,     label="True", linewidth=1)
+    ax.plot(time, amp_pred, "--",label="Pred", linewidth=1)
+    ax.set_title("Amplitude")
+    ax.legend()
 
-        # Plot Amplitude
-        ax = axs[row, 1]
-        ax.plot(time, amp_true, label="True Amplitude", linewidth=1)
-        ax.plot(time, amp_pred, "--", label="Predicted Amplitude", linewidth=1)
-        if row == 0:
-            ax.set_title("Amplitude")
-        ax.set_ylabel("Amplitude")
-        ax.legend(loc="upper left")
+    # Unwrapped phase
+    ax = axes[0,2]
+    ax.plot(time, phi_true,     label="True", linewidth=1)
+    ax.plot(time, phi_pred, "--",label="Pred", linewidth=1)
+    ax.set_title("Phase (unwrapped)")
+    ax.set_ylabel("Phase [rad]")
+    ax.legend()
 
-        # Plot Phase
-        ax = axs[row, 2]
-        ax.plot(time, phi_true, label="True Phase", linewidth=1)
-        ax.plot(time, phi_pred, "--", label="Predicted Phase", linewidth=1)
-        if row == 0:
-            ax.set_title("Phase")
-        ax.set_ylabel("Phase [rad]")
-        ax.set_yscale("log")
-        ax.legend(loc="upper left")
+    # Wrapped phase
+    ax = axes[0,3]
+    ax.plot(time, phi_wr_true,     label="True", linewidth=1)
+    ax.plot(time, phi_wr_pred, "--",label="Pred", linewidth=1)
+    ax.set_title(r"Phase (wrapped $0 -> 2\pi$)")
+    ax.set_ylabel("Phase")
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
+    ax.set_ylim(0, 2*np.pi)
+    ax.legend()
 
-    for ax in axs[-1, :]:
-        ax.set_xlabel("Time [s]")
+    # Bottom row: residuals
+    # Strain residual
+    ax = axes[1,0]
+    ax.plot(time, h_pred - h_true, color="C2", linewidth=1)
+    ax.set_title("Strain Residual")
+    ax.set_xlabel("Time [s]")
 
-    plt.tight_layout()
+    # Amplitude residual
+    ax = axes[1,1]
+    ax.plot(time, amp_pred - amp_true, color="C2", linewidth=1)
+    ax.set_title("Amplitude Residual")
+    ax.set_xlabel("Time [s]")
+
+    # Unwrapped phase residual
+    ax = axes[1,2]
+    ax.plot(time, phi_pred - phi_true, color="C2", linewidth=1)
+    ax.set_title("Phase Residual (unwrapped)")
+    ax.set_ylabel("Delta Phase [rad]")
+    ax.set_xlabel("Time [s]")
+
+    # Wrapped phase residual
+    ax = axes[1,3]
+    ax.plot(time, phi_res_wrapped, color="C2", linewidth=1)
+    ax.set_title(r"Phase Residual (wrapped $\pm \pi$)")
+    ax.set_ylabel(r"Delta Phase mod $2\pi$ [rad]")
+    ax.set_ylim(-np.pi, np.pi)
+    ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
+    ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
+    ax.set_xlabel("Time [s]")
+
+    plt.tight_layout(rect=[0,0,1,0.95])
     output_dir = "plots"
     os.makedirs(output_dir, exist_ok=True)
     out_file = os.path.join(output_dir, "waveform_plots.png")
     plt.savefig(out_file)
-    logger.info(f"Saved waveform plots to {out_file}")
+    logger.info(f"Saved waveform plot to {out_file}")
 
 def cross_correlation_fixed_q(
     q_list=(1.0, 1.5, 2.0, 2.5),
@@ -92,7 +150,7 @@ def cross_correlation_fixed_q(
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    data = generate_data()
+    data = generate_data(samples=10)
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     qs, matches = [], []
@@ -198,7 +256,7 @@ def polar():
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     # pick one parameter set, here first entry
-    data = generate_data()
+    data = generate_data(samples=1)
     m1, m2, chi1z, chi2z, incl, ecc = data.thetas[0]
     logger.info(f"Using params m1={m1:.1f}, m2={m2:.1f}, chi1z={chi1z:.2f}, "
                 f"chi2z={chi2z:.2f}, incl={incl:.2f}, ecc={ecc:.2f}")
@@ -270,6 +328,6 @@ if __name__ == "__main__":
     matches = cross_correlation_fixed_q()
     polar()
 
-    notify_discord(
-            f"Evaluation complete! cross correlation matches: {matches}\n"
-    )
+#    notify_discord(
+#            f"Evaluation complete! cross correlation matches: {matches}\n"
+#    )

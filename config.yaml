@@ -46,7 +46,7 @@ training:
   weight_decay:   0.1
 
   # Batching & epochs
-  batch_size:     256
+  batch_size:     512
   num_epochs:     200
   patience:       50
   min_delta:      1e-6

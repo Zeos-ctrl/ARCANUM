@@ -261,5 +261,5 @@ if __name__ == "__main__":
     )
 
     train_and_save(CHECKPOINT_DIR)
-    notify_discord("3‑stage training complete!")
+#    notify_discord("3‑stage training complete!")
 
