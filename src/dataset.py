@@ -89,23 +89,23 @@ def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     Generate a noisy waveform at (approximate) SNR=snr_target,
     but ensure we always use WAVEFORM_LENGTH samples.
     """
-    # 1) get exactly WAVEFORM_LENGTH data via your helper
+    # get exactly WAVEFORM_LENGTH data via your helper
     h_clean = make_waveform(theta)  # now shape == (WAVEFORM_LENGTH,)
 
-    # 2) manual whiten in freq domain
-    Hf = fft(h_clean)               # length = WAVEFORM_LENGTH
+    # manual whiten in freq domain
+    Hf = fft(h_clean)
     sqrt_psd = np.sqrt(psd_arr) + 1e-30
-    Hf_white = Hf / sqrt_psd        # now matching lengths
+    Hf_white = Hf / sqrt_psd
     h_white  = np.real(ifft(Hf_white))
 
-    # 3) compute native whitened‑RMS → SNR
+    # compute native whitened -> SNR
     rho_clean = np.sqrt(np.sum(h_white**2) * DELTA_T)
     scale     = (snr_target/rho_clean) if rho_clean>0 else 1.0
 
-    # 4) scale the **clean** fixed‑length waveform
+    # scale the **clean** fixed‑length waveform
     h_scaled = h_clean * scale
 
-    # 5) add PSD‐matched noise
+    # add PSD‐matched noise
     noise_td = noise.noise_from_psd(
         WAVEFORM_LENGTH, DELTA_T, psd_arr, seed=seed
     ).numpy()
