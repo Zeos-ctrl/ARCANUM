@@ -12,6 +12,6 @@ def test_make_waveform_length():
 def test_make_noisy_waveform_reproducibility():
     theta = sample_parameters(1)[0]
     psd = aLIGOZeroDetHighPower(WAVEFORM_LENGTH, 1.0 / (WAVEFORM_LENGTH * DELTA_T), 20)
-    h1 = make_noisy_waveform(theta, psd, seed=42)
-    h2 = make_noisy_waveform(theta, psd, seed=42)
+    h1 = make_noisy_waveform(theta, psd, seed=42, snr_target=0)
+    h2 = make_noisy_waveform(theta, psd, seed=42, snr_target=0)
     assert np.allclose(h1, h2), "Noise generation is not reproducible with same seed."
