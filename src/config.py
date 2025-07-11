@@ -13,6 +13,7 @@ PROFILE = os.getenv("WF_PROFILE", "seobnrv4")
 PYCBC = _cfg["pycbc"][PROFILE]
 SAMPLING_RANGES = SimpleNamespace(**_cfg["sampling_ranges"])
 TRAINING = SimpleNamespace(**_cfg["training"])
+MODEL = SimpleNamespace(**_cfg["model"])
 CHECKPOINT_DIR = _cfg["paths"]["checkpoint_dir"]
 
 # Device
@@ -37,6 +38,9 @@ INCLINATION_MIN  = SAMPLING_RANGES.incl_min
 INCLINATION_MAX  = SAMPLING_RANGES.incl_max
 ECC_MIN          = SAMPLING_RANGES.ecc_min
 ECC_MAX          = SAMPLING_RANGES.ecc_max
+CLEAN            = SAMPLING_RANGES.clean
+SNR_MIN          = SAMPLING_RANGES.snr_min
+SNR_MAX          = SAMPLING_RANGES.snr_max
 
 # Training / optimizer
 NUM_SAMPLES      = TRAINING.num_samples
@@ -51,6 +55,14 @@ BATCH_SIZE       = TRAINING.batch_size
 NUM_EPOCHS       = TRAINING.num_epochs
 PATIENCE         = TRAINING.patience
 MIN_DELTA        = float(TRAINING.min_delta)
+
+# Model params
+AMP_EMB_HIDDEN   = MODEL.amp_emb_hidden
+AMP_HIDDEN       = MODEL.amp_hidden
+AMP_BANKS        = MODEL.amp_banks
+PHASE_EMB_HIDDEN = MODEL.phase_emb_hidden
+PHASE_HIDDEN     = MODEL.phase_hidden
+PHASE_BANKS      = MODEL.phase_banks
 
 # Scheduler sub‑block
 SCHEDULER_CFG    = SimpleNamespace(**TRAINING.scheduler)
@@ -73,3 +85,12 @@ GUILD_ID          = int(NOTIFICATIONS.get("guild_id", 0))
 
 # Paths
 CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]
+
+# Inputs to train the network, comment out to disable
+TRAIN_FEATURES = [
+    "chirp_mass",
+    "symmetric_mass_ratio",
+#    "effective_spin",
+#    "inclination",
+#    "eccentricity",
+]

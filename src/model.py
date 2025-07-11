@@ -67,7 +67,7 @@ class PhaseDNN_Full(nn.Module):
     """
     PhaseDNN that learns phi(t; theta), with a BatchNorm+Dropout embeder and residual PhaseSubNets.
     """
-    def __init__(self, param_dim=6, time_dim=1, emb_hidden=[64,64],
+    def __init__(self, param_dim=5, time_dim=1, emb_hidden=[64,64],
                  phase_hidden=[128,128,128,128], N_banks=1, dropout=0.1):
         super().__init__()
         self.N_banks = N_banks
@@ -126,7 +126,7 @@ class AmplitudeDNN_Full(nn.Module):
     """
     def __init__(
         self,
-        in_param_dim=6,
+        in_param_dim=5,
         time_dim=1,
         emb_hidden=(64,64),
         amp_hidden=(128,128,128),

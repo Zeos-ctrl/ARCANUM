@@ -196,25 +196,28 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         logger.info("Checkpoint directory: %s", checkpoint_dir)
 
         # Generate data & loaders
-        data = generate_data(clean=False)
+        data = generate_data()
         loaders = make_loaders(data)
+
+        features = len(TRAIN_FEATURES)
+        logger.info(f"Training on {features} features: {TRAIN_FEATURES}")
 
         # Instantiate fresh models
         amp_model = AmplitudeDNN_Full(
-            in_param_dim=6,
+            in_param_dim=features,
             time_dim=1,
-            emb_hidden=(64,64),
-            amp_hidden=(128,128,128),
-            N_banks=2,
+            emb_hidden=AMP_EMB_HIDDEN,
+            amp_hidden=AMP_HIDDEN,
+            N_banks=AMP_BANKS,
             dropout=0.1
         ).to(DEVICE)
 
         phase_model = PhaseDNN_Full(
-                param_dim=6,
+                param_dim=features,
                 time_dim=1,
-                emb_hidden=[64,64],
-                phase_hidden=[128,128,128,128],
-                N_banks=1,
+                emb_hidden=PHASE_EMB_HIDDEN,
+                phase_hidden=PHASE_HIDDEN,
+                N_banks=PHASE_BANKS,
                 dropout=0.1
         ).to(DEVICE)
 

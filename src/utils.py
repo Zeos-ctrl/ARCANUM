@@ -80,123 +80,297 @@ class WaveformPredictor:
 
         self.device = torch.device(device)
 
-        # Load normalization
-        self.param_means    = np.load(f"{checkpoint_dir}/param_means.npy")
-        self.param_stds     = np.load(f"{checkpoint_dir}/param_stds.npy")
-        self.t_norm_array   = np.load(f"{checkpoint_dir}/t_norm_array.npy")
-        meta_path = f"{checkpoint_dir}/meta.json"
+        # Load normalization for derived params
+        self.param_means  = np.load(os.path.join(checkpoint_dir, "param_means.npy"))
+        self.param_stds   = np.load(os.path.join(checkpoint_dir, "param_stds.npy"))
+        self.t_norm_array = np.load(os.path.join(checkpoint_dir, "t_norm_array.npy"))
+
+        # Load meta
+        meta_path = os.path.join(checkpoint_dir, "meta.json")
         if os.path.exists(meta_path):
             with open(meta_path) as f:
                 meta = json.load(f)
-            self.log_amp_min = meta["log_amp_min"]
-            self.log_amp_max = meta["log_amp_max"]
+            self.log_amp_min   = meta["log_amp_min"]
+            self.log_amp_max   = meta["log_amp_max"]
             self.waveform_length = meta["waveform_length"]
             self.delta_t         = meta["delta_t"]
-            self.train_samples = int(meta.get("train_samples", NUM_SAMPLES))
-            self.logger.debug(f"Loaded meta: waveform_length={self.waveform_length}, delta_t={self.delta_t}")
+            self.train_samples   = int(meta.get("train_samples", 0))
         else:
-            self.waveform_length = YOUR_DEFAULT
-            self.delta_t         = YOUR_DEFAULT
-            self.logger.warning("Meta file missing, using default waveform_length and delta_t")
+            raise FileNotFoundError(f"Meta file not found at {meta_path}")
 
-        # Build models (must match architecture used in training)
+        self.features = len(TRAIN_FEATURES)
+
+        # Build models
         self.amp_model = AmplitudeDNN_Full(
-            in_param_dim=6,
+            in_param_dim=self.features,
             time_dim=1,
-            emb_hidden=(64,64),
-            amp_hidden=(128,128,128),
-            N_banks=2,
+            emb_hidden=AMP_EMB_HIDDEN,
+            amp_hidden=AMP_HIDDEN,
+            N_banks=AMP_BANKS,
             dropout=0.1
-        ).to(DEVICE)
+        ).to(self.device)
+
         self.phase_model = PhaseDNN_Full(
-            param_dim=6, time_dim=1,
-            emb_hidden=[64,64],
-            phase_hidden=[128,128,128,128],
-            N_banks=1
-        )
+            param_dim=self.features,
+            time_dim=1,
+            emb_hidden=PHASE_EMB_HIDDEN,
+            phase_hidden=PHASE_HIDDEN,
+            N_banks=PHASE_BANKS,
+            dropout=0.1
+        ).to(self.device)
 
         # Load weights
         self.amp_model.load_state_dict(
-            torch.load(f"{checkpoint_dir}/amp_model.pt", map_location=self.device)
+            torch.load(os.path.join(checkpoint_dir, "amp_model.pt"), map_location=self.device)
         )
         self.phase_model.load_state_dict(
-            torch.load(f"{checkpoint_dir}/phase_model.pt", map_location=self.device)
+            torch.load(os.path.join(checkpoint_dir, "phase_model.pt"), map_location=self.device)
         )
-        self.amp_model.to(self.device).eval()
-        self.phase_model.to(self.device).eval()
+        self.amp_model.eval()
+        self.phase_model.eval()
         self.logger.info("Models loaded and set to eval mode.")
 
-    def _normalize_params(self, raw_params):
-        """raw_params: array-like of shape (6,)"""
-        return (raw_params - self.param_means) / self.param_stds
+    def _compute_derived(self, m1, m2, chi1z, chi2z, incl, ecc):
+        """Return [Mc, η, χ_eff, incl, ecc]."""
+        Mc   = (m1*m2)**(3/5) / (m1+m2)**(1/5)
+        eta  = (m1*m2) / (m1+m2)**2
+        chi_eff = (m1*chi1z + m2*chi2z) / (m1+m2)
+        return np.array([Mc, eta, chi_eff, incl, ecc], dtype=np.float32)
+
+    def _normalize_derived(self, derived):
+        return (derived - self.param_means) / self.param_stds
 
     def inverse_log_norm(self, y_norm: np.ndarray) -> np.ndarray:
-        # Denormalize log10(A):  y = y_norm*(U−L) + L
+        """Denormalize log10 amplitude and return linear amplitude."""
         y = y_norm * (self.log_amp_max - self.log_amp_min) + self.log_amp_min
-        # Back to linear amplitude
         return 10 ** y
 
-    def predict(self, m1, m2, chi1z, chi2z, incl, ecc):
-        self.logger.debug(f"Predict called with params: m1={m1}, m2={m2}, chi1z={chi1z}, chi2z={chi2z}, incl={incl}, ecc={ecc}")
-        # Normalize and build input tensor of shape (L,7)
-        theta = np.array([m1,m2,chi1z,chi2z,incl,ecc])
-        theta_n = self._normalize_params(theta)
-        L = self.waveform_length
+    def predict(
+        self,
+        m1, m2,
+        spin1_z, spin2_z,
+        inclination, eccentricity,
+        waveform_length=None,
+        sampling_dt=None
+    ):
+        # 1) Build the real-time grid
+        L  = waveform_length or self.default_length
+        dt = sampling_dt    or self.default_dt
+        t_real = np.linspace(-L*dt, 0.0, L)
+        t_norm = 2*(t_real + L*dt)/(L*dt) - 1
 
-        # Replicate params across time steps
-        t_n = self.t_norm_array  # shape (L,)
-        params_grid = np.tile(theta_n, (L,1))  # (L,6)
-        inp = np.concatenate([t_n[:,None], params_grid], axis=1).astype(np.float32)
+        # 2) Compute all possible derived quantities
+        derived_map = {
+            "chirp_mass":           (m1*m2)**(3/5) / (m1+m2)**(1/5),
+            "symmetric_mass_ratio": (m1*m2) / (m1+m2)**2,
+            "effective_spin":       (m1*spin1_z + m2*spin2_z) / (m1+m2),
+            "inclination":          inclination,
+            "eccentricity":         eccentricity
+        }
 
+        # 3) Stack only those in TRAIN_FEATURES, in order
+        D = len(TRAIN_FEATURES)
+        derived = np.array([derived_map[f] for f in TRAIN_FEATURES],
+                           dtype=np.float32)         # shape (D,)
+
+        # 4) Normalize them
+        theta_n = (derived - self.param_means) / self.param_stds  # (D,)
+
+        # 5) Build model inputs: (L, 1+D)
+        param_grid = np.tile(theta_n, (L,1))                     # (L,D)
+        model_input = np.concatenate([t_norm[:,None], param_grid], axis=1)  # (L,1+D)
+        inp_t = torch.from_numpy(model_input.astype(np.float32)).to(self.device)
+
+        # 6) Forward through networks
         with torch.no_grad():
-            inp_t = torch.from_numpy(inp).to(self.device)
-            amp_pred_n = (
-                self.amp_model(inp_t[:,:1], inp_t[:,1:])
-                .cpu().numpy()
-                .ravel()
-            )
-            phi_pred = (
-                self.phase_model(inp_t[:,:1], inp_t[:,1:])
-                .cpu().numpy()
-                .ravel()
-            )
-        self.logger.debug("Prediction completed.")
-        return self.t_norm_array, amp_pred_n, phi_pred
+            A_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()
+            phi    = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()
 
-    def batch_predict(self, thetas: np.ndarray, batch_size: int = None):
-        """
-        Vectorized prediction in chunks of `batch_size` (default = how many samples you trained on).
-        """
-        N = thetas.shape[0]
-        L = self.waveform_length
+        amp = self.inverse_log_norm(A_norm)
+        cosi = np.cos(inclination)
+        h_plus  = amp * ((1 + cosi**2)/2) * np.cos(phi)
+        h_cross = amp * ( cosi       ) * np.sin(phi)
 
-        # Use training set size as default batch_size
+        return t_real, h_plus, h_cross
+
+
+    def batch_predict(self, thetas_raw, batch_size=None):
+        N = thetas_raw.shape[0]
+        L = self.default_length
+        dt = self.default_dt
         if batch_size is None:
             batch_size = self.train_samples
 
-        results_amp = []
-        results_phi = []
-        # now chunk in slices of `batch_size`:
+        # Precompute time grid
+        t_real = np.linspace(-L*dt, 0.0, L)
+        t_norm = 2*(t_real + L*dt)/(L*dt) - 1
+
+        D = len(TRAIN_FEATURES)
+        all_amp, all_phi = [], []
+
         for start in range(0, N, batch_size):
-            end = min(start + batch_size, N)
-            theta_batch = thetas[start:end]
-            theta_n = (theta_batch - self.param_means) / self.param_stds
+            end   = min(start+batch_size, N)
+            block = thetas_raw[start:end]  # shape (B,6)
+            B     = end - start
 
-            t_grid = np.broadcast_to(self.t_norm_array, (end - start, L))
-            theta_grid = np.broadcast_to(theta_n[:, None, :], (end - start, L, 6))
-            inp = np.concatenate([t_grid[...,None], theta_grid], axis=-1) \
-                     .reshape(-1, 7).astype(np.float32)
+            # 1) compute derived for each row in block
+            derived = []
+            for (m1,m2,sp1,sp2,inc,ecc) in block:
+                dm = {
+                    "chirp_mass":           (m1*m2)**(3/5)/(m1+m2)**(1/5),
+                    "symmetric_mass_ratio": (m1*m2)/(m1+m2)**2,
+                    "effective_spin":       (m1*sp1 + m2*sp2)/(m1+m2),
+                    "inclination":          inc,
+                    "eccentricity":         ecc
+                }
+                derived.append([dm[f] for f in TRAIN_FEATURES])
+            derived = np.array(derived, dtype=np.float32)  # (B,D)
 
+            # 2) normalize
+            theta_n = (derived - self.param_means) / self.param_stds  # (B,D)
+
+            # 3) build model input: (B, L, 1+D) -> flatten to (B*L, 1+D)
+            t_blk  = np.broadcast_to(t_norm, (B, L))                # (B,L)
+            p_blk  = np.broadcast_to(theta_n[:,None,:], (B, L, D)) # (B,L,D)
+            inp    = np.concatenate([t_blk[...,None], p_blk], axis=-1)
+            flat   = inp.reshape(-1, 1+D).astype(np.float32)        # (B*L,1+D)
+
+            inp_t  = torch.from_numpy(flat).to(self.device)
             with torch.no_grad():
-                inp_t     = torch.from_numpy(inp).to(self.device)
-                amp_n     = self.amp_model(inp_t[:, :1], inp_t[:, 1:]).cpu().numpy() \
-                              .reshape(end - start, L)
-                phi_n     = self.phase_model(inp_t[:, :1], inp_t[:, 1:]) \
-                              .cpu().numpy().reshape(end - start, L)
+                A_n = self.amp_model(inp_t[:,:1], inp_t[:,1:])\
+                             .cpu().numpy().reshape(B, L)
+                ph  = self.phase_model(inp_t[:,:1], inp_t[:,1:])\
+                             .cpu().numpy().reshape(B, L)
 
-            results_amp.append(self.inverse_log_norm(amp_n))
-            results_phi.append(phi_n)
+            all_amp.append(A_n)
+            all_phi.append(ph)
 
-        amp_preds = np.concatenate(results_amp, axis=0)
-        phi_preds = np.concatenate(results_phi, axis=0)
-        return self.t_norm_array, amp_preds, phi_preds
+        A_mat   = np.vstack(all_amp)   # (N,L)
+        phi_mat = np.vstack(all_phi)   # (N,L)
+
+        # reconstruct plus/cross using inclination column index:
+        inc_idx = TRAIN_FEATURES.index("inclination")
+        incls   = derived[:, inc_idx]  # careful: or extract from thetas_raw
+        cosi    = np.cos(incls)[:,None]
+
+        h_plus  = self.inverse_log_norm(A_mat) * ((1+cosi**2)/2) * np.cos(phi_mat)
+        h_cross = self.inverse_log_norm(A_mat) * ( cosi       ) * np.sin(phi_mat)
+
+        return t_real, h_plus, h_cross
+
+    def predict_debug(
+        self,
+        m1, m2,
+        spin1_z, spin2_z,
+        inclination, eccentricity,
+        waveform_length=None,
+        sampling_dt=None
+    ):
+        """
+        Like predict(), but returns the normalized log-amplitude and phase.
+        Returns:
+          time_seconds (L,),
+          amp_pred     (L,),  # in linear units after inverse_log_norm
+          phi_pred     (L,)   # raw unwrapped radians
+        """
+        # 1) time grid
+        L  = waveform_length or self.waveform_length
+        dt = sampling_dt    or self.delta_t
+        t_real = np.linspace(-L*dt, 0.0, L)
+        t_norm = 2*(t_real + L*dt)/(L*dt) - 1
+
+        # 2) prepare derived_map
+        derived_map = {
+          "chirp_mass":           (m1*m2)**(3/5)/(m1+m2)**(1/5),
+          "symmetric_mass_ratio": (m1*m2)/(m1+m2)**2,
+          "effective_spin":       (m1*spin1_z + m2*spin2_z)/(m1+m2),
+          "inclination":          inclination,
+          "eccentricity":         eccentricity
+        }
+
+        # 3) stack only TRAIN_FEATURES
+        D = len(TRAIN_FEATURES)
+        derived = np.array([derived_map[f] for f in TRAIN_FEATURES],
+                           dtype=np.float32)             # (D,)
+
+        # 4) normalize
+        theta_n = (derived - self.param_means) / self.param_stds  # (D,)
+
+        # 5) build model input (L,1+D)
+        param_grid = np.tile(theta_n, (L,1))
+        model_input = np.concatenate([t_norm[:,None], param_grid], axis=1).astype(np.float32)
+
+        inp_t = torch.from_numpy(model_input).to(self.device)
+        with torch.no_grad():
+            log_amp_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:])\
+                                 .cpu().numpy().ravel()
+            phi_pred     = self.phase_model(inp_t[:,:1], inp_t[:,1:])\
+                                 .cpu().numpy().ravel()
+
+        # inverse‐log‐norm to get linear amplitude
+        amp_pred = self.inverse_log_norm(log_amp_norm)
+
+        return t_real, amp_pred, phi_pred
+
+
+    def batch_predict_debug(self, thetas_raw, batch_size=None):
+        """
+        Returns:
+          time_seconds (L,),
+          amp_matrix   (N,L),  # linear amplitude
+          phi_matrix   (N,L)   # raw unwrapped phase
+        """
+        N = thetas_raw.shape[0]
+        L = self.waveform_length
+        dt = self.delta_t
+        if batch_size is None:
+            batch_size = self.train_samples
+
+        # prepare time grid once
+        t_real = np.linspace(-L*dt, 0.0, L)
+        t_norm = 2*(t_real + L*dt)/(L*dt) - 1
+
+        D = len(TRAIN_FEATURES)
+        all_amp, all_phi = [], []
+
+        for start in range(0, N, batch_size):
+            end   = min(start + batch_size, N)
+            block = thetas_raw[start:end]  # (B,6)
+            B     = end - start
+
+            # compute derived & select features
+            derived = []
+            for m1,m2,sp1,sp2,inc,ecc in block:
+                dm = {
+                  "chirp_mass":           (m1*m2)**(3/5)/(m1+m2)**(1/5),
+                  "symmetric_mass_ratio": (m1*m2)/(m1+m2)**2,
+                  "effective_spin":       (m1*sp1 + m2*sp2)/(m1+m2),
+                  "inclination":          inc,
+                  "eccentricity":         ecc
+                }
+                derived.append([ dm[f] for f in TRAIN_FEATURES ])
+            derived = np.array(derived, dtype=np.float32)  # (B,D)
+
+            # normalize
+            theta_n = (derived - self.param_means) / self.param_stds  # (B,D)
+
+            # build input (B,L,1+D) → flatten to (B*L,1+D)
+            t_blk  = np.broadcast_to(t_norm, (B, L))                # (B,L)
+            p_blk  = np.broadcast_to(theta_n[:,None,:], (B, L, D)) # (B,L,D)
+            inp    = np.concatenate([t_blk[...,None], p_blk], axis=-1)
+            flat   = inp.reshape(-1, 1+D).astype(np.float32)
+
+            inp_t = torch.from_numpy(flat).to(self.device)
+            with torch.no_grad():
+                A_n = self.amp_model(inp_t[:,:1], inp_t[:,1:])\
+                             .cpu().numpy().reshape(B, L)
+                ph  = self.phase_model(inp_t[:,:1], inp_t[:,1:])\
+                             .cpu().numpy().reshape(B, L)
+
+            all_amp.append(self.inverse_log_norm(A_n))
+            all_phi.append(ph)
+
+        amp_matrix = np.vstack(all_amp)  # (N,L)
+        phi_matrix = np.vstack(all_phi)  # (N,L)
+
+        return t_real, amp_matrix, phi_matrix
