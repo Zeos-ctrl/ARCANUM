@@ -4,7 +4,7 @@ pycbc:
     delta_t:         2048
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 1024
+    waveform_length: 2048
 
   phenomd:
     waveform_name:   "IMRPhenomPv2"
@@ -13,20 +13,31 @@ pycbc:
     detector_name:   "H1"
     waveform_length: 16384
 
+model:
+  amp_emb_hidden: [64,64]
+  amp_hidden: [128,128,128]
+  amp_banks: 2
+  phase_emb_hidden: [64,64]
+  phase_hidden: [128,128,128,128]
+  phase_banks: 2
+
 sampling_ranges:
   mass_min:     20.0
   mass_max:     50.0
-  spin_mag_min: -0.01
-  spin_mag_max:  0.01
+  spin_mag_min: -0.99
+  spin_mag_max:  0.99
   incl_min:      0.0
-  incl_max:      0.01
+  incl_max:      3.141592653589793
   ecc_min:       0.0
-  ecc_max:       0.01
+  ecc_max:       0.3
+  clean:         True # clean or noisy data
+  snr_min:       10
+  snr_max:       20
 
 training:
   # Data & splitting
-  num_samples:    100
-  val_split:      0.2
+  num_samples:    10
+  val_split:      0.3
   random_seed:    42
 
   # Optimization

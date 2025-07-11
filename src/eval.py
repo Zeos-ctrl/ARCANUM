@@ -36,10 +36,9 @@ def evaluate():
         phi_true      = data.targets_phi.reshape(NUM_SAMPLES, L)[i]
 
         # Predict normalized log-amplitude and phase
-        t_norm, amp_pred_norm, phi_pred = pred.predict(m1, m2, c1z, c2z, incl, ecc)
+        t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl, ecc)
 
         # Inverse-log-normalize amplitudes into physical units
-        amp_pred = pred.inverse_log_norm(amp_pred_norm)
         amp_true = pred.inverse_log_norm(amp_true_norm)
 
         # Reconstruct strains
@@ -92,7 +91,7 @@ def cross_correlation_fixed_q(
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    data = generate_data(clean=True)
+    data = generate_data()
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     qs, matches = [], []
@@ -118,10 +117,9 @@ def cross_correlation_fixed_q(
         h_true     = amp_true * np.cos(phi_true)
 
         # Model prediction & inversion
-        t_norm, amp_pred_norm, phi_pred = pred.predict(
+        t_norm, amp_pred, phi_pred = pred.predict_debug(
             m1,m2,c1z,c2z,incl_i,ecc_i
         )
-        amp_pred = pred.inverse_log_norm(amp_pred_norm)
         h_pred   = amp_pred * np.cos(phi_pred)
 
         # Compute match
@@ -191,7 +189,64 @@ def cross_correlation_fixed_q(
     logger.info("Saved match vs q plot.")
 
     return matches
-  
+
+def polar():
+    logger.info("Plotting same parameters over 0.25s, 0.5s, and 1.0s durations")
+
+    pred = WaveformPredictor("checkpoints", device=DEVICE)
+
+    # pick one parameter set, here first entry
+    data = generate_data()
+    m1, m2, chi1z, chi2z, incl, ecc = data.thetas[0]
+    logger.info(f"Using params m1={m1:.1f}, m2={m2:.1f}, chi1z={chi1z:.2f}, "
+                f"chi2z={chi2z:.2f}, incl={incl:.2f}, ecc={ecc:.2f}")
+
+    # base sampling interval from checkpoint
+    dt = pred.delta_t
+
+    # desired durations (seconds)
+    durations = [0.25, 0.5, 1.0]
+
+    # prepare figure: 3 rows, 2 cols
+    fig, axs = plt.subplots(3, 2, figsize=(12, 10), sharex=False)
+    fig.suptitle("Waveforms at 0.25 s, 0.5 s, 1.0 s Durations", fontsize=16)
+
+    for row, duration in enumerate(durations):
+        # compute number of samples
+        L = int(np.round(duration / dt))
+
+        # get waveform
+        time_sec, h_plus, h_cross = pred.predict(
+            m1, m2, chi1z, chi2z, incl, ecc,
+            waveform_length=L,
+            sampling_dt=dt
+        )
+
+        # plus
+        ax_p = axs[row, 0]
+        ax_p.plot(time_sec, h_plus, linewidth=1)
+        ax_p.set_ylabel("h₊")
+        ax_p.set_title(f"Duration = {duration:.2f} s ({L} samples)")
+        ax_p.grid(True)
+
+        # cross
+        ax_c = axs[row, 1]
+        ax_c.plot(time_sec, h_cross, linewidth=1, color="C1")
+        ax_c.set_ylabel("hₓ")
+        ax_c.set_title(f"Duration = {duration:.2f} s ({L} samples)")
+        ax_c.grid(True)
+
+        # only bottom row gets x-label
+        if row == len(durations)-1:
+            ax_p.set_xlabel("Time [s]")
+            ax_c.set_xlabel("Time [s]")
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
+    os.makedirs("plots", exist_ok=True)
+    outfile = os.path.join("plots", "waveforms_varying_duration.png")
+    plt.savefig(outfile)
+    logger.info(f"Saved varying‐duration waveforms to {outfile}")
+
 if __name__ == "__main__":
     # Logging
     os.makedirs("logs", exist_ok=True)
@@ -210,6 +265,7 @@ if __name__ == "__main__":
 
     evaluate()
     matches = cross_correlation_fixed_q()
+    polar()
 
     notify_discord(
             f"Evaluation complete! cross correlation matches: {matches}\n"

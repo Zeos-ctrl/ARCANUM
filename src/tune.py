@@ -59,14 +59,14 @@ def train_and_eval(
 
     # Build models
     amp_model = AmplitudeDNN_Full(
-        in_param_dim=6, time_dim=1,
+        in_param_dim=5, time_dim=1,
         emb_hidden=[64,64],
         amp_hidden=amp_hidden_dims,
         N_banks=banks
     ).to(device)
 
     phase_model = PhaseDNN_Full(
-        param_dim=6, time_dim=1,
+        param_dim=5, time_dim=1,
         emb_hidden=[64,64],
         phase_hidden=phase_hidden_dims,
         N_banks=banks
