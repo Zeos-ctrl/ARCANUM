@@ -15,17 +15,17 @@ pycbc:
 
 model:
   amp_emb_hidden: [64,64]
-  amp_hidden: [128,128,128]
-  amp_banks: 2
+  amp_hidden: [256,256,256,256]
+  amp_banks: 4
   phase_emb_hidden: [64,64]
-  phase_hidden: [128,128,128,128]
-  phase_banks: 2
+  phase_hidden: [256,256,256,256]
+  phase_banks: 4
 
 sampling_ranges:
   mass_min:     20.0
   mass_max:     50.0
-  spin_mag_min: -0.99
-  spin_mag_max:  0.99
+  spin_mag_min: -0.9
+  spin_mag_max:  0.9
   incl_min:      0.0
   incl_max:      3.141592653589793
   ecc_min:       0.0
@@ -36,14 +36,14 @@ sampling_ranges:
 
 training:
   # Data & splitting
-  num_samples:    10
+  num_samples:    100
   val_split:      0.3
   random_seed:    42
 
   # Optimization
   optimizer:      "adam"
-  learning_rate:  0.001
-  weight_decay:   0.0
+  learning_rate:  0.005
+  weight_decay:   0.1
 
   # Batching & epochs
   batch_size:     256

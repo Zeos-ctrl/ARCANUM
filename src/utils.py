@@ -4,6 +4,7 @@ import torch
 import logging
 import requests
 import numpy as np
+from dataclasses import dataclass
 
 from src.model import *
 from src.config import *
@@ -73,6 +74,14 @@ def compute_match(h_true, h_pred):
     logger.debug(f"Spoiler alert match is: {max_corr / norm}")
     return max_corr / norm
 
+@dataclass
+class TimeSeriesStrainData:
+    data: np.ndarray # Data array of the waveform
+    epoch: float # Start time for the waveform
+    sample_rate: float # delta_t
+    time: np.ndarray # Normalized time array
+    approximant: str # approximant used in training
+
 class WaveformPredictor:
     def __init__(self, checkpoint_dir, device="cpu"):
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -107,7 +116,7 @@ class WaveformPredictor:
             emb_hidden=AMP_EMB_HIDDEN,
             amp_hidden=AMP_HIDDEN,
             N_banks=AMP_BANKS,
-            dropout=0.1
+            dropout=0.2
         ).to(self.device)
 
         self.phase_model = PhaseDNN_Full(
@@ -153,45 +162,56 @@ class WaveformPredictor:
         waveform_length=None,
         sampling_dt=None
     ):
-        # 1) Build the real-time grid
+        # real & normalized time grids
         L  = waveform_length or self.default_length
         dt = sampling_dt    or self.default_dt
-        t_real = np.linspace(-L*dt, 0.0, L)
-        t_norm = 2*(t_real + L*dt)/(L*dt) - 1
+        t_real = np.linspace(-L*dt, 0.0, L)                                           # (L,)
+        t_norm = 2*(t_real + L*dt)/(L*dt) - 1                                        # (L,)
 
-        # 2) Compute all possible derived quantities
+        # derived features → normalized
         derived_map = {
-            "chirp_mass":           (m1*m2)**(3/5) / (m1+m2)**(1/5),
-            "symmetric_mass_ratio": (m1*m2) / (m1+m2)**2,
-            "effective_spin":       (m1*spin1_z + m2*spin2_z) / (m1+m2),
+            "chirp_mass":           (m1*m2)**(3/5)/(m1+m2)**(1/5),
+            "symmetric_mass_ratio": (m1*m2)/(m1+m2)**2,
+            "effective_spin":       (m1*spin1_z + m2*spin2_z)/(m1+m2),
             "inclination":          inclination,
             "eccentricity":         eccentricity
         }
-
-        # 3) Stack only those in TRAIN_FEATURES, in order
         D = len(TRAIN_FEATURES)
-        derived = np.array([derived_map[f] for f in TRAIN_FEATURES],
-                           dtype=np.float32)         # shape (D,)
+        derived = np.array([derived_map[f] for f in TRAIN_FEATURES], dtype=np.float32)  # (D,)
+        theta_n = (derived - self.param_means) / self.param_stds                        # (D,)
 
-        # 4) Normalize them
-        theta_n = (derived - self.param_means) / self.param_stds  # (D,)
-
-        # 5) Build model inputs: (L, 1+D)
-        param_grid = np.tile(theta_n, (L,1))                     # (L,D)
-        model_input = np.concatenate([t_norm[:,None], param_grid], axis=1)  # (L,1+D)
+        # build model input (L, 1+D)
+        param_grid = np.tile(theta_n, (L,1))                                           # (L,D)
+        model_input = np.concatenate([t_norm[:,None], param_grid], axis=1)             # (L,1+D)
         inp_t = torch.from_numpy(model_input.astype(np.float32)).to(self.device)
 
-        # 6) Forward through networks
+        # forward
         with torch.no_grad():
-            A_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()
-            phi    = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()
+            A_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()     # (L,)
+            phi    = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()  # (L,)
 
-        amp = self.inverse_log_norm(A_norm)
-        cosi = np.cos(inclination)
+        # Invert amp‐norm and build polarizations
+        amp    = self.inverse_log_norm(A_norm)                                         # (L,)
+        cosi   = np.cos(inclination)
         h_plus  = amp * ((1 + cosi**2)/2) * np.cos(phi)
         h_cross = amp * ( cosi       ) * np.sin(phi)
 
-        return t_real, h_plus, h_cross
+        # wrap into TimeSeriesStrainData
+        plus = TimeSeriesStrainData(
+            data        = h_plus,
+            epoch       = t_real[0],
+            sample_rate = dt,
+            time  = t_norm,
+            approximant = WAVEFORM
+        )
+        cross = TimeSeriesStrainData(
+            data        = h_cross,
+            epoch       = t_real[0],
+            sample_rate = dt,
+            time  = t_norm,
+            approximant = WAVEFORM
+        )
+        return plus, cross
 
 
     def batch_predict(self, thetas_raw, batch_size=None):
@@ -201,7 +221,7 @@ class WaveformPredictor:
         if batch_size is None:
             batch_size = self.train_samples
 
-        # Precompute time grid
+        # precompute time grids
         t_real = np.linspace(-L*dt, 0.0, L)
         t_norm = 2*(t_real + L*dt)/(L*dt) - 1
 
@@ -210,10 +230,10 @@ class WaveformPredictor:
 
         for start in range(0, N, batch_size):
             end   = min(start+batch_size, N)
-            block = thetas_raw[start:end]  # shape (B,6)
+            block = thetas_raw[start:end]
             B     = end - start
 
-            # 1) compute derived for each row in block
+            # derived & normalize (B,D)
             derived = []
             for (m1,m2,sp1,sp2,inc,ecc) in block:
                 dm = {
@@ -224,18 +244,15 @@ class WaveformPredictor:
                     "eccentricity":         ecc
                 }
                 derived.append([dm[f] for f in TRAIN_FEATURES])
-            derived = np.array(derived, dtype=np.float32)  # (B,D)
+            derived = np.array(derived, dtype=np.float32)
+            theta_n = (derived - self.param_means) / self.param_stds
 
-            # 2) normalize
-            theta_n = (derived - self.param_means) / self.param_stds  # (B,D)
+            # build and flatten model input (B*L,1+D)
+            t_blk = np.broadcast_to(t_norm, (B, L))
+            p_blk = np.broadcast_to(theta_n[:,None,:], (B, L, D))
+            flat  = np.concatenate([t_blk[...,None], p_blk], axis=-1).reshape(-1,1+D).astype(np.float32)
 
-            # 3) build model input: (B, L, 1+D) -> flatten to (B*L, 1+D)
-            t_blk  = np.broadcast_to(t_norm, (B, L))                # (B,L)
-            p_blk  = np.broadcast_to(theta_n[:,None,:], (B, L, D)) # (B,L,D)
-            inp    = np.concatenate([t_blk[...,None], p_blk], axis=-1)
-            flat   = inp.reshape(-1, 1+D).astype(np.float32)        # (B*L,1+D)
-
-            inp_t  = torch.from_numpy(flat).to(self.device)
+            inp_t = torch.from_numpy(flat).to(self.device)
             with torch.no_grad():
                 A_n = self.amp_model(inp_t[:,:1], inp_t[:,1:])\
                              .cpu().numpy().reshape(B, L)
@@ -248,15 +265,34 @@ class WaveformPredictor:
         A_mat   = np.vstack(all_amp)   # (N,L)
         phi_mat = np.vstack(all_phi)   # (N,L)
 
-        # reconstruct plus/cross using inclination column index:
+        # reconstruct plus/cross
         inc_idx = TRAIN_FEATURES.index("inclination")
-        incls   = derived[:, inc_idx]  # careful: or extract from thetas_raw
+        incls   = derived[:, inc_idx]
         cosi    = np.cos(incls)[:,None]
 
-        h_plus  = self.inverse_log_norm(A_mat) * ((1+cosi**2)/2) * np.cos(phi_mat)
-        h_cross = self.inverse_log_norm(A_mat) * ( cosi       ) * np.sin(phi_mat)
+        amp_mat = self.inverse_log_norm(A_mat)
+        h_plus  = amp_mat * ((1+cosi**2)/2) * np.cos(phi_mat)
+        h_cross = amp_mat * ( cosi       ) * np.sin(phi_mat)
 
-        return t_real, h_plus, h_cross
+        # wrap per sample
+        h_plus_list, h_cross_list = [], []
+        for i in range(N):
+            h_plus_list.append(TimeSeriesStrainData(
+                data        = h_plus[i],
+                epoch       = t_real[0],
+                sample_rate = dt,
+                time  = t_norm,
+                approximant = WAVEFORM
+            ))
+            h_cross_list.append(TimeSeriesStrainData(
+                data        = h_cross[i],
+                epoch       = t_real[0],
+                sample_rate = dt,
+                time  = t_norm,
+                approximant = WAVEFORM
+            ))
+
+        return h_plus_list, h_cross_list
 
     def predict_debug(
         self,
@@ -354,7 +390,7 @@ class WaveformPredictor:
             # normalize
             theta_n = (derived - self.param_means) / self.param_stds  # (B,D)
 
-            # build input (B,L,1+D) → flatten to (B*L,1+D)
+            # build input (B,L,1+D) -> flatten to (B*L,1+D)
             t_blk  = np.broadcast_to(t_norm, (B, L))                # (B,L)
             p_blk  = np.broadcast_to(theta_n[:,None,:], (B, L, D)) # (B,L,D)
             inp    = np.concatenate([t_blk[...,None], p_blk], axis=-1)

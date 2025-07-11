@@ -52,7 +52,7 @@ def evaluate():
         if row == 0:
             ax.set_title("Strain")
         ax.set_ylabel("Strain")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper left")
 
         # Plot Amplitude
         ax = axs[row, 1]
@@ -61,7 +61,7 @@ def evaluate():
         if row == 0:
             ax.set_title("Amplitude")
         ax.set_ylabel("Amplitude")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper left")
 
         # Plot Phase
         ax = axs[row, 2]
@@ -70,7 +70,8 @@ def evaluate():
         if row == 0:
             ax.set_title("Phase")
         ax.set_ylabel("Phase [rad]")
-        ax.legend(loc="upper right")
+        ax.set_yscale("log")
+        ax.legend(loc="upper left")
 
     for ax in axs[-1, :]:
         ax.set_xlabel("Time [s]")
@@ -151,21 +152,22 @@ def cross_correlation_fixed_q(
         ax.plot(t_norm, h_pred, '--', label="Predicted", linewidth=1)
         if row==0: ax.set_title("Strain")
         ax.set_ylabel(f"q={q:.1f}")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper left")
 
         # Amplitude
         ax = axs[row,1]
         ax.plot(t_norm, A_true, label="True Amp", linewidth=1)
         ax.plot(t_norm, A_pred, '--', label="Predicted Amp", linewidth=1)
         if row==0: ax.set_title("Amplitude")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper left")
 
         # Phase
         ax = axs[row,2]
         ax.plot(t_norm, phi_true, label="True Phase", linewidth=1)
         ax.plot(t_norm, phi_pred, '--', label="Predicted Phase", linewidth=1)
+        ax.set_yscale("log")
         if row==0: ax.set_title("Phase")
-        ax.legend(loc="upper right")
+        ax.legend(loc="upper left")
 
     for ax in axs[-1,:]:
         ax.set_xlabel("Normalized time")
@@ -216,7 +218,7 @@ def polar():
         L = int(np.round(duration / dt))
 
         # get waveform
-        time_sec, h_plus, h_cross = pred.predict(
+        h_plus, h_cross = pred.predict(
             m1, m2, chi1z, chi2z, incl, ecc,
             waveform_length=L,
             sampling_dt=dt
@@ -224,14 +226,14 @@ def polar():
 
         # plus
         ax_p = axs[row, 0]
-        ax_p.plot(time_sec, h_plus, linewidth=1)
+        ax_p.plot(h_plus.time, h_plus.data, linewidth=1)
         ax_p.set_ylabel("h₊")
         ax_p.set_title(f"Duration = {duration:.2f} s ({L} samples)")
         ax_p.grid(True)
 
         # cross
         ax_c = axs[row, 1]
-        ax_c.plot(time_sec, h_cross, linewidth=1, color="C1")
+        ax_c.plot(h_cross.time, h_cross.data, linewidth=1, color="C1")
         ax_c.set_ylabel("hₓ")
         ax_c.set_title(f"Duration = {duration:.2f} s ({L} samples)")
         ax_c.grid(True)
@@ -262,6 +264,7 @@ if __name__ == "__main__":
 
     # Stopping the voices
     logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
+    logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 
     evaluate()
     matches = cross_correlation_fixed_q()
