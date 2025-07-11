@@ -175,7 +175,7 @@ def generate_data(
         all_log_amp[i]    = np.log10(inst_amp)
         all_phi_unwrap[i] = np.unwrap(np.angle(analytic))
 
-    # normalize amp → [0,1]
+    # normalize amp -> [0,1]
     log_amp_min = all_log_amp.min()
     log_amp_max = all_log_amp.max()
     all_log_amp_norm = (all_log_amp - log_amp_min)/(log_amp_max-log_amp_min)
