@@ -209,7 +209,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
             emb_hidden=AMP_EMB_HIDDEN,
             amp_hidden=AMP_HIDDEN,
             N_banks=AMP_BANKS,
-            dropout=0.2
+            dropout=0.1
         ).to(DEVICE)
 
         phase_model = PhaseDNN_Full(
