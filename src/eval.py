@@ -141,6 +141,13 @@ def evaluate():
     plt.savefig(out_file)
     logger.info(f"Saved waveform plot to {out_file}")
 
+    m1, m2, c1z, c2z, incl, ecc = data.thetas[i]
+    plot_prediction_uncertainty(
+        pred,
+        m1, m2, c1z, c2z, incl, ecc,
+        output_path="plots/prediction_uncertainty.png"
+    )
+
 def cross_correlation_fixed_q(
     q_list=(1.0, 1.5, 2.0, 2.5),
     chi1z=0.0, chi2z=0.0,
@@ -150,7 +157,7 @@ def cross_correlation_fixed_q(
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    data = generate_data(samples=10)
+    data = generate_data()
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     qs, matches = [], []
@@ -256,7 +263,7 @@ def polar():
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     # pick one parameter set, here first entry
-    data = generate_data(samples=1)
+    data = generate_data(samples=5)
     m1, m2, chi1z, chi2z, incl, ecc = data.thetas[0]
     logger.info(f"Using params m1={m1:.1f}, m2={m2:.1f}, chi1z={chi1z:.2f}, "
                 f"chi2z={chi2z:.2f}, incl={incl:.2f}, ecc={ecc:.2f}")
@@ -307,6 +314,60 @@ def polar():
     plt.savefig(outfile)
     logger.info(f"Saved varying‐duration waveforms to {outfile}")
 
+def plot_prediction_uncertainty(
+    predictor: WaveformPredictor,
+    mass_1: float, mass_2: float,
+    spin1_z: float, spin2_z: float,
+    inclination: float, eccentricity: float,
+    output_path: str = "plots/prediction_uncertainty.png"
+):
+    """
+    Generate and save a plot of h(t) with its uncertainty band.
+    """
+
+    # Ensure output directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    logger.info(f"Plotting prediction with uncertainty to {output_path}")
+
+    set_sigma_level = 3
+    # Get waveform + uncertainty
+    plus_strain, _ = predictor.predict_with_uncertainty(
+        mass_1, mass_2,
+        spin1_z, spin2_z,
+        inclination, eccentricity,
+        sigma_level=set_sigma_level
+    )
+
+    # Plot
+    fig, ax = plt.subplots(figsize=(10,4))
+    time = plus_strain.time
+    mean = plus_strain.data
+    sigma = plus_strain.uncertainty
+
+    ax.plot(time, mean, label=f"Predicted $h_+(t)$", linewidth=1)
+    ax.fill_between(time,
+                    mean - sigma,
+                    mean + sigma,
+                    color=ax.lines[-1].get_color(),
+                    alpha=0.3,
+                    label=rf"$\pm{set_sigma_level}\sigma $band")
+    ax.set_title(
+        rf"Prediction $\pm1\sigma$ | $m_1$={mass_1:.1f}, $m_2$={mass_2:.1f}, "
+        rf"$χ_1z$={spin1_z:.2f}, $χ_2z$={spin2_z:.2f}, incl={inclination:.2f}, ecc={eccentricity:.2f}"
+    )
+    ax.set_xlabel("Time [s]")
+    ax.set_ylabel("Strain h₊")
+    ax.legend(loc="best")
+    ax.grid(True)
+
+    # Save and close
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close(fig)
+
+    logger.info(f"Saved uncertainty plot to {output_path}")
+
+
 if __name__ == "__main__":
     # Logging
     os.makedirs("logs", exist_ok=True)
@@ -325,7 +386,7 @@ if __name__ == "__main__":
     logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 
     evaluate()
-    matches = cross_correlation_fixed_q()
+#    matches = cross_correlation_fixed_q()
     polar()
 
 #    notify_discord(
