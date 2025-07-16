@@ -56,15 +56,15 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         # Network prediction
         logger.debug("Starting Network batch prediction for %d waveforms", h_true.shape[0])
         t0 = time.perf_counter()
-        _, amp_pred, phi_pred = predictor.batch_predict(valid_thetas)
+        h_plus, h_cross = predictor.batch_predict(valid_thetas, batch_size=n)
         t_pred = time.perf_counter() - t0
-        logger.info("Network predicted %d waveforms in %.3fs", amp_pred.shape[0], t_pred)
+        logger.info("Network predicted %d waveforms in %.3fs", n, t_pred)
 
         # Compute matches
         logger.debug("Computing matches for each pair")
         matches = []
         for i in range(h_true.shape[0]):
-            m = compute_match(h_true[i], amp_pred[i] * np.cos(phi_pred[i]))
+            m = compute_match(h_true[i], h_plus[i].data)
             matches.append(m)
         mean_match = float(np.mean(matches))
         logger.info(

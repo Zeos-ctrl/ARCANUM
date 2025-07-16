@@ -1,5 +1,3 @@
-# train_and_save.py
-
 # Pytorch and ml
 import torch
 import torch.nn as nn
@@ -12,6 +10,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 # Logging and system utils
 import os
 import logging
+import numpy as np
 from tqdm import tqdm
 import matplotlib.pyplot as plt
 
@@ -24,6 +23,67 @@ from src.utils import save_checkpoint, notify_discord
 
 logger = logging.getLogger(__name__)
 
+
+def compute_last_layer_hessian_diag(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    noise_var: float = 1.0
+):
+    """
+    Approximate the diagonal of the Hessian of MSELoss wrt the final Linear layer’s
+    weights and bias, using a forward‐hook to capture the penultimate features φ.
+    Returns:
+      weight_variances: Tensor of shape (1, in_features)
+      bias_variance:    Tensor scalar shape (1,)
+    """
+    # 1) find the last Linear(out_features==1) in module order
+    linears = [
+        m for m in model.modules()
+        if isinstance(m, nn.Linear) and m.out_features == 1
+    ]
+    assert linears, "No final Linear layer with out_features=1 found!"
+    final_linear = linears[-1]
+
+    # 2) prepare accumulators
+    W = final_linear.weight               # shape (1, in_features)
+    B = final_linear.bias                 # shape (1,)
+    H_w = torch.zeros_like(W, device=device)
+    H_b = torch.zeros_like(B, device=device)
+
+    # 3) hook to grab the input features φ whenever final_linear runs
+    captured = {"phi": None}
+    def hook_fn(module, inputs, output):
+        # inputs is a tuple; inputs[0] is φ of shape (batch, in_features)
+        captured["phi"] = inputs[0].detach()
+
+    hook = final_linear.register_forward_hook(hook_fn)
+
+    # 4) sweep once over the loader
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            # our loaders['amp']['train'] yields (X, A), loaders['phase']['train'] yields (X, φ)
+            X, Y = batch[0].to(device), batch[1].to(device)
+            # forward through the entire model (we only care about capturing φ)
+            _ = model(X[:, :1], X[:, 1:])  # or model(X) depending on your signature
+
+            phi = captured["phi"]          # shape (B, in_features)
+            B_size = phi.shape[0]
+
+            # for MSELoss, Hessian wrt w is (1/noise_variance) * (φ^2 summed over batch)
+            H_w += (phi ** 2).sum(dim=0, keepdim=True) / noise_var
+            # bias term Hessian is (1/noise_variance) * 1 for each sample
+            H_b += torch.ones_like(B) * (B_size / noise_var)
+
+    # 5) unhook
+    hook.remove()
+
+    # 6) invert diagonal to get posterior variances
+    weight_variances = 1.0 / H_w    # shape (1, in_features)
+    bias_variance    = 1.0 / H_b    # shape (1,)
+
+    return weight_variances, bias_variance
 
 def make_loaders(data):
     """Generate train/val loaders for amplitude & phase."""
@@ -227,8 +287,21 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         # Stage 2: phase alone
         phase_model = train_phase_only(phase_model, loaders, checkpoint_dir)
 
+        # Stage 3: compute laplacian hessian
+        wA_var, bA_var = compute_last_layer_hessian_diag(amp_model, loaders['amp']['train'], DEVICE)
+        wP_var, bP_var = compute_last_layer_hessian_diag(phase_model, loaders['phase']['train'], DEVICE)
+
         # Save final combined checkpoint
-        save_checkpoint(checkpoint_dir, amp_model, phase_model, data)
+        save_checkpoint(
+            checkpoint_dir,
+            amp_model,
+            phase_model,
+            data,
+            wA_var, bA_var,
+            wP_var, bP_var,
+            noise_variance=1.0
+        )
+
         logger.info("Saved final checkpoint (amp+phase)")
 
         # Plot parameter distributions
