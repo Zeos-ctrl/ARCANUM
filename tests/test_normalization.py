@@ -1,6 +1,6 @@
 import pytest
 import numpy as np
-from src.dataset import generate_data
+from src.data.dataset import generate_data
 
 def test_parameter_normalization():
     dataset = generate_data(clean=True)

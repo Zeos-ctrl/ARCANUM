@@ -8,10 +8,10 @@ class ModelType(str, Enum):
     MLP = "mlp"
     FNO = "fno"
 
-MODEL_TYPE: ModelType = ModelType.FNO
+MODEL_TYPE: ModelType = ModelType.MLP
 
 # Load YAML
-_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "../..", "config.yaml")
 with open(_CONFIG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
 
@@ -67,9 +67,11 @@ MIN_DELTA        = float(TRAINING.min_delta)
 AMP_EMB_HIDDEN   = MODEL.amp_emb_hidden
 AMP_HIDDEN       = MODEL.amp_hidden
 AMP_BANKS        = MODEL.amp_banks
+AMP_DROPOUT    = 0.1
 PHASE_EMB_HIDDEN = MODEL.phase_emb_hidden
 PHASE_HIDDEN     = MODEL.phase_hidden
 PHASE_BANKS      = MODEL.phase_banks
+PHASE_DROPOUT    = 0.1
 
 # Scheduler sub‑block
 SCHEDULER_CFG    = SimpleNamespace(**TRAINING.scheduler)

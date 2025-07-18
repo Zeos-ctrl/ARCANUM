@@ -14,7 +14,7 @@ from pycbc.waveform import get_td_waveform
 from pycbc.psd import aLIGOZeroDetHighPower
 
 # Libraries
-from src.config import *
+from src.data.config import *
 
 logger = logging.getLogger(__name__)
 

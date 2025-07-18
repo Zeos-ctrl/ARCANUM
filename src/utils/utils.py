@@ -4,10 +4,11 @@ import torch
 import logging
 import requests
 import numpy as np
+import torch.nn as nn
 from dataclasses import dataclass
 
-from src.model import *
-from src.config import *
+from src.models.model_factory import make_amp_model, make_phase_model
+from src.data.config import *
 
 logger = logging.getLogger(__name__)
 
@@ -97,12 +98,12 @@ def compute_match(h_true, h_pred):
 
 @dataclass
 class TimeSeriesStrainData:
-    data: np.ndarray # Data array of the waveform
+    data: np.ndarray        # Data array of the waveform
     uncertainty: np.ndarray # Data array of uncertainty for every datapoint
-    epoch: float # Start time for the waveform
-    sample_rate: float # delta_t
-    time: np.ndarray # Normalized time array
-    approximant: str # approximant used in training
+    epoch: float            # Start time for the waveform
+    sample_rate: float      # delta_t
+    time: np.ndarray        # Normalized time array
+    approximant: str        # approximant used in training
 
 class WaveformPredictor:
     def __init__(self, checkpoint_dir: str, device: str = DEVICE):
@@ -129,25 +130,15 @@ class WaveformPredictor:
         self.train_samples   = int(meta.get("train_samples", 0))
 
         # Build and load models
-        num_features = len(TRAIN_FEATURES)
+        features = len(TRAIN_FEATURES)
 
-        self.amp_model = AmplitudeDNN_Full(
-            in_param_dim=num_features,
-            time_dim=1,
-            emb_hidden=AMP_EMB_HIDDEN,
-            amp_hidden=AMP_HIDDEN,
-            N_banks=AMP_BANKS,
-            dropout=0.2
-        ).to(self.device)
+        self.amp_model = make_amp_model(
+            in_param_dim=features,
+        ).to(DEVICE)
 
-        self.phase_model = PhaseDNN_Full(
-            param_dim=num_features,
-            time_dim=1,
-            emb_hidden=PHASE_EMB_HIDDEN,
-            phase_hidden=PHASE_HIDDEN,
-            N_banks=PHASE_BANKS,
-            dropout=0.1
-        ).to(self.device)
+        self.phase_model = make_phase_model(
+            param_dim=features,
+        ).to(DEVICE)
 
         self.amp_model.load_state_dict(
             torch.load(os.path.join(checkpoint_dir, "amp_model.pt"), map_location=self.device)

@@ -10,9 +10,9 @@ import matplotlib.ticker as mticker
 from pycbc.waveform import get_td_waveform
 
 # Libraries
-from src.config import *
-from src.dataset import generate_data
-from src.utils import compute_match, WaveformPredictor, notify_discord
+from src.data.config import *
+from src.data.dataset import generate_data
+from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 
 logger = logging.getLogger(__name__)
 
@@ -149,61 +149,72 @@ def evaluate():
         output_path="plots/prediction_uncertainty.png"
     )
 
+
 def cross_correlation_fixed_q(
     q_list=(1.0, 1.5, 2.0, 2.5),
     chi1z=0.0, chi2z=0.0,
     incl=0.0, ecc=0.0
 ):
+    """
+    For each mass ratio q in q_list:
+      - Select waveform from dataset closest to q
+      - Compute true and predicted strains
+      - Compute match (cross-correlation statistic)
+      - Plot waveform grid (strain, amplitude, phase)
+      - Plot symmetric mass ratio vs match
+    Returns:
+      matches: list of match values per q
+    """
     logger.info("Running waveform cross-correlation vs mass ratio q.")
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
+    # Load data and predictor
     data = generate_data()
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
-    qs, matches = [], []
+    qs, sym_masses, matches = [], [], []
     h_trues, h_preds, t_norms = [], [], []
     L = data.time_unscaled.size
 
-    # Precompute ratios in the dataset
-    mass_ratios = data.thetas[:,1] / data.thetas[:,0]  # m2/m1 for each sample
+    # Precompute mass ratios and total masses
+    thetas = data.thetas
+    mass_ratios = thetas[:,1] / thetas[:,0]  # m2/m1
+    total_masses = thetas[:,0] + thetas[:,1]  # m1 + m2
+    sym_ratio = (thetas[:,0] * thetas[:,1]) / (total_masses**2)  # symmetric mass ratio η
 
     for q in q_list:
-        # Find the dataset index whose m2/m1 is closest to q
+        # Find index closest to desired q
         idx = np.argmin(np.abs(mass_ratios - q))
-        m1, m2, c1z, c2z, incl_i, ecc_i = data.thetas[idx]
+        m1, m2, c1z, c2z, incl_i, ecc_i = thetas[idx]
 
-        # Recover the true envelope + phase from stored targets:
+        # True waveform reconstruction
         amp_true_norm = data.targets_A.reshape(-1, L)[idx]
-        phi_true      = data.targets_phi.reshape(-1, L)[idx]
+        phi_true_arr   = data.targets_phi.reshape(-1, L)[idx]
+        log_rec        = amp_true_norm * (data.log_amp_max - data.log_amp_min) + data.log_amp_min
+        amp_true       = 10**log_rec
+        h_true         = amp_true * np.cos(phi_true_arr)
 
-        # Invert log‐min‐max → physical amplitude
-        log_rec    = amp_true_norm * (data.log_amp_max - data.log_amp_min) \
-                     + data.log_amp_min
-        amp_true   = 10**log_rec
-        h_true     = amp_true * np.cos(phi_true)
+        # Model prediction
+        t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl_i, ecc_i)
+        h_pred = amp_pred * np.cos(phi_pred)
 
-        # Model prediction & inversion
-        t_norm, amp_pred, phi_pred = pred.predict_debug(
-            m1,m2,c1z,c2z,incl_i,ecc_i
-        )
-        h_pred   = amp_pred * np.cos(phi_pred)
-
-        # Compute match
+        # Compute match (normalized cross-correlation)
         match = compute_match(h_true, h_pred)
+
+        # Record
         qs.append(q)
         matches.append(match)
-
-        # store for plotting
+        sym_masses.append((m1 * m2) / ((m1 + m2)**2))
         h_trues.append(h_true)
         h_preds.append(h_pred)
         t_norms.append(t_norm)
 
-    # plotting grid of strain / amplitude / phase
+    # Plot waveform grid: strain, amplitude, phase
     K = len(q_list)
-    _, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
+    fig, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
     for row, (q, h_true, h_pred, t_norm) in enumerate(zip(qs, h_trues, h_preds, t_norms)):
-        # true envelope + phase
+        # Analytic signals
         analytic_true = hilbert(h_true)
         A_true = np.abs(analytic_true)
         phi_true = np.unwrap(np.angle(analytic_true))
@@ -213,48 +224,52 @@ def cross_correlation_fixed_q(
         phi_pred = np.unwrap(np.angle(analytic_pred))
 
         # Strain
-        ax = axs[row,0]
+        ax = axs[row, 0]
         ax.plot(t_norm, h_true, label="True", linewidth=1)
         ax.plot(t_norm, h_pred, '--', label="Predicted", linewidth=1)
-        if row==0: ax.set_title("Strain")
+        if row == 0:
+            ax.set_title("Strain")
         ax.set_ylabel(f"q={q:.1f}")
         ax.legend(loc="upper left")
 
         # Amplitude
-        ax = axs[row,1]
+        ax = axs[row, 1]
         ax.plot(t_norm, A_true, label="True Amp", linewidth=1)
-        ax.plot(t_norm, A_pred, '--', label="Predicted Amp", linewidth=1)
-        if row==0: ax.set_title("Amplitude")
+        ax.plot(t_norm, A_pred, '--', label="Pred Amp", linewidth=1)
+        if row == 0:
+            ax.set_title("Amplitude")
         ax.legend(loc="upper left")
 
         # Phase
-        ax = axs[row,2]
+        ax = axs[row, 2]
         ax.plot(t_norm, phi_true, label="True Phase", linewidth=1)
-        ax.plot(t_norm, phi_pred, '--', label="Predicted Phase", linewidth=1)
+        ax.plot(t_norm, phi_pred, '--', label="Pred Phase", linewidth=1)
         ax.set_yscale("log")
-        if row==0: ax.set_title("Phase")
+        if row == 0:
+            ax.set_title("Phase")
         ax.legend(loc="upper left")
 
-    for ax in axs[-1,:]:
+    for ax in axs[-1, :]:
         ax.set_xlabel("Normalized time")
 
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, "waveform_grid_fixed_q.png"))
+    grid_path = os.path.join(plot_dir, "waveform_grid_fixed_q.png")
+    plt.savefig(grid_path)
     plt.close()
-    logger.info("Saved waveform grid plot.")
+    logger.info("Saved waveform grid to %s", grid_path)
 
-    # match vs q scatter
-    plt.figure(figsize=(8,5))
-    plt.scatter(qs, matches)
-    plt.xlabel(r"$q=m_2/m_1$")
+    # Plot symmetric mass ratio vs match
+    plt.figure(figsize=(8, 5))
+    plt.scatter(sym_masses, matches)
+    plt.xlabel(r"Symmetric mass ratio $\eta = m_1 m_2/(m_1 + m_2)^2$")
     plt.ylabel("Match")
-    plt.ylim(min(matches),1)
-    plt.title("Waveform Match vs Mass Ratio")
+    plt.title("Match vs Symmetric Mass Ratio")
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, "cross_correlation_fixed_q.png"))
+    scatter_path = os.path.join(plot_dir, "match_vs_symmetric_mass.png")
+    plt.savefig(scatter_path)
     plt.close()
-    logger.info("Saved match vs q plot.")
+    logger.info("Saved symmetric mass vs match plot to %s", scatter_path)
 
     return matches
 
@@ -293,14 +308,14 @@ def polar():
         # plus
         ax_p = axs[row, 0]
         ax_p.plot(h_plus.time, h_plus.data, linewidth=1)
-        ax_p.set_ylabel("h₊")
+        ax_p.set_ylabel("h+")
         ax_p.set_title(f"Duration = {duration:.2f} s ({L} samples)")
         ax_p.grid(True)
 
         # cross
         ax_c = axs[row, 1]
         ax_c.plot(h_cross.time, h_cross.data, linewidth=1, color="C1")
-        ax_c.set_ylabel("hₓ")
+        ax_c.set_ylabel("hx")
         ax_c.set_title(f"Duration = {duration:.2f} s ({L} samples)")
         ax_c.grid(True)
 

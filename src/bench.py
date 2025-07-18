@@ -6,17 +6,21 @@ import warnings
 import numpy as np
 from scipy.signal import hilbert
 import plotly.graph_objects as go
+from scipy.stats import gaussian_kde
 
 import torch
 
-from src.config import DEVICE
-from src.dataset import sample_parameters, make_waveform
-from src.utils import compute_match, WaveformPredictor, notify_discord
+from src.data.config import DEVICE
+from src.data.dataset import sample_parameters, make_waveform
+from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 
 logger = logging.getLogger(__name__)
 
 # Suppress PyCBC warnings
 warnings.filterwarnings("ignore", module="pycbc")
+
+
+logger = logging.getLogger(__name__)
 
 def benchmark(sample_counts, predictor: WaveformPredictor):
     """
@@ -25,9 +29,14 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
       - Predict n waveforms via the DNN (batch_predict)
       - Time both operations
       - Compute mean match between true & predicted strains
+      - Save both an interactive scatter plot of matches vs index and
+        a histogram with a smooth Gaussian KDE overlay of match distribution
     """
     results = {}
     logger.info("Starting benchmark over sample counts: %s", sample_counts)
+
+    out_dir = "plots/benchmark"
+    os.makedirs(out_dir, exist_ok=True)
 
     for n in sample_counts:
         logger.info("Benchmarking n=%d samples", n)
@@ -66,6 +75,8 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         for i in range(h_true.shape[0]):
             m = compute_match(h_true[i], h_plus[i].data)
             matches.append(m)
+        matches = np.array(matches)
+
         mean_match = float(np.mean(matches))
         logger.info(
             "n=%d summary: pycbc=%.3fs, predict=%.3fs, mean_match=%.4f",
@@ -79,7 +90,7 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
             "n_success":      h_true.shape[0]
         }
 
-        # Interactive scatter
+        # Scatter plot of matches vs sample index
         idx = list(range(len(matches)))
         hover_text = [
             f"m1={theta[0]:.2f}, m2={theta[1]:.2f}<br>"
@@ -88,30 +99,60 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
             for theta in valid_thetas
         ]
 
-        logger.debug("Building interactive plot for n=%d", n)
-        fig = go.Figure(go.Scatter(
+        fig_scatter = go.Figure(go.Scatter(
             x=idx, y=matches, mode="markers",
             marker=dict(size=6),
             hovertext=hover_text,
             hoverinfo="text"
         ))
-        fig.update_layout(
+        fig_scatter.update_layout(
             title=f"Match vs Sample Index (n={n})",
             xaxis_title="Sample Index",
             yaxis_title="Match",
             height=400, width=800
         )
 
-        out_dir = "plots/benchmark"
-        os.makedirs(out_dir, exist_ok=True)
-
-        html_path = os.path.join(out_dir, f"benchmark_comparison_{n}_samples.html")
-        fig.write_html(
-            html_path,
+        scatter_path = os.path.join(out_dir, f"benchmark_scatter_{n}_samples.html")
+        fig_scatter.write_html(
+            scatter_path,
             include_plotlyjs="cdn",
             full_html=True
         )
-        logger.info("Saved interactive plot to %s", html_path)
+        logger.info("Saved scatter plot to %s", scatter_path)
+
+        # Histogram with Gaussian KDE overlay
+        logger.debug("Building histogram with KDE for n=%d", n)
+        kde = gaussian_kde(matches)
+        x_vals = np.linspace(matches.min(), matches.max(), 200)
+        kde_vals = kde(x_vals)
+
+        hist = go.Histogram(
+            x=matches,
+            histnorm='probability density',
+            name='Histogram',
+            opacity=0.75
+        )
+        kde_line = go.Scatter(
+            x=x_vals,
+            y=kde_vals,
+            mode='lines',
+            name='KDE'
+        )
+        fig_hist = go.Figure(data=[hist, kde_line])
+        fig_hist.update_layout(
+            title=f"Match Distribution with Gaussian KDE (n={n})",
+            xaxis_title="Match",
+            yaxis_title="Density",
+            height=400, width=800
+        )
+
+        hist_path = os.path.join(out_dir, f"benchmark_histogram_{n}_samples.html")
+        fig_hist.write_html(
+            hist_path,
+            include_plotlyjs="cdn",
+            full_html=True
+        )
+        logger.info("Saved histogram plot to %s", hist_path)
 
     logger.info("Benchmark complete.")
     return results

@@ -1,8 +1,8 @@
 import os
 import torch
-from src.dataset import generate_data
+from src.data.dataset import generate_data
 from src.train import make_loaders
-from src.model import *
+from src.models.model_factory import *
 from torch.profiler import (
     profile,
     record_function,
@@ -115,8 +115,13 @@ if __name__ == '__main__':
     loaders = make_loaders(data)
 
     features    = data.inputs.shape[1] - 1
-    amp_model   = AmplitudeDNN_Full(features,1,AMP_EMB_HIDDEN,AMP_HIDDEN,AMP_BANKS,0.1).to(DEVICE)
-    phase_model = PhaseDNN_Full(features,1,PHASE_EMB_HIDDEN,PHASE_HIDDEN,PHASE_BANKS,0.1).to(DEVICE)
+    amp_model = make_amp_model(
+        in_param_dim=features,
+    ).to(DEVICE)
+
+    phase_model = make_phase_model(
+        param_dim=features,
+    ).to(DEVICE)
 
     profile_training(
         amp_model=amp_model,

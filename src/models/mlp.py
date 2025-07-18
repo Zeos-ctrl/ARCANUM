@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from src.config import DEVICE
+from src.data.config import DEVICE
 
 class ResidualBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
