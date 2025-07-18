@@ -2,6 +2,13 @@ import os
 import yaml
 import torch
 from types import SimpleNamespace
+from enum import Enum
+
+class ModelType(str, Enum):
+    MLP = "mlp"
+    FNO = "fno"
+
+MODEL_TYPE: ModelType = ModelType.FNO
 
 # Load YAML
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "..", "config.yaml")
@@ -66,9 +73,6 @@ PHASE_BANKS      = MODEL.phase_banks
 
 # Scheduler sub‑block
 SCHEDULER_CFG    = SimpleNamespace(**TRAINING.scheduler)
-
-# Fine‑tuning sub‑block
-FINE_TUNE_CFG    = SimpleNamespace(**TRAINING.fine_tune)
 
 # HPO sub‑block
 HPO_CFG          = SimpleNamespace(**TRAINING.hpo)

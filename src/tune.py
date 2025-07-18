@@ -18,8 +18,8 @@ from src.dataset import generate_data
 from src.model import AmplitudeDNN_Full, PhaseDNN_Full
 from src.utils import notify_discord
 
-# Data
-DATA = generate_data()
+HPO_SAMPLE_COUNT = 10
+DATA = generate_data(samples=HPO_SAMPLE_COUNT)
 storage = "sqlite:///optuna_study.db"
 
 # Sampler & pruner shared between studies
@@ -33,7 +33,6 @@ pruner = optuna.pruners.MedianPruner(
     n_warmup_steps=2
 )
 
-# Training & evaluation helpers
 def train_and_eval_amp(
     data,
     amp_hidden_dims,
@@ -113,7 +112,7 @@ def train_and_eval_amp(
 
         # Report & prune
         if trial:
-            trial.report(val_loss, epoch)
+            trial.report(val_loss.item(), epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
 
@@ -122,14 +121,14 @@ def train_and_eval_amp(
             best_val = val_loss
             epochs_no_improve = 0
             os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-            torch.save(amp_model.state_dict(), os.path.join(CHECKPOINT_DIR, "amp_best.pt"))
+            torch.save(amp_model.state_dict(),
+                       os.path.join(CHECKPOINT_DIR, "amp_best.pt"))
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
                 break
 
     return best_val
-
 
 def train_and_eval_phase(
     data,
@@ -143,7 +142,7 @@ def train_and_eval_phase(
     device,
     trial=None,
 ) -> float:
-    X = torch.from_numpy(data.inputs).to(device)
+    X   = torch.from_numpy(data.inputs).to(device)
     phi = torch.from_numpy(data.targets_phi).to(device)
 
     idx = list(range(X.size(0)))
@@ -152,8 +151,8 @@ def train_and_eval_phase(
         random_state=RANDOM_SEED,
         shuffle=True
     )
-    train_ds = TensorDataset(X[train_idx], phi[train_idx])
-    val_ds   = TensorDataset(X[val_idx],   phi[val_idx])
+    train_ds = TensorDataset(X[train_idx],   phi[train_idx])
+    val_ds   = TensorDataset(X[val_idx],     phi[val_idx])
     loaders = {
         'train': DataLoader(train_ds, batch_size=batch_size, shuffle=True),
         'val':   DataLoader(val_ds,   batch_size=batch_size, shuffle=False)
@@ -183,27 +182,29 @@ def train_and_eval_phase(
     epochs_no_improve = 0
 
     for epoch in range(1, num_epochs + 1):
+        # Train
         phase_model.train()
-        for Xb, phib in loaders['train']:
+        for Xb, Phib in loaders['train']:
             t_norm, theta = Xb[:, :1].to(device), Xb[:, 1:].to(device)
-            phib = phib.to(device)
-            loss = criterion(phase_model(t_norm, theta), phib)
+            Phib = Phib.to(device)
+            loss = criterion(phase_model(t_norm, theta), Phib)
             optimizer.zero_grad()
             loss.backward()
             torch.nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
             optimizer.step()
 
+        # Validate
         phase_model.eval()
         val_loss = 0.0
         with torch.no_grad():
-            for Xb, phib in loaders['val']:
+            for Xb, Phib in loaders['val']:
                 t_norm, theta = Xb[:, :1].to(device), Xb[:, 1:].to(device)
-                val_loss += criterion(phase_model(t_norm, theta), phib.to(device)) * Xb.size(0)
+                val_loss += criterion(phase_model(t_norm, theta), Phib.to(device)) * Xb.size(0)
         val_loss /= len(val_ds)
         scheduler.step(val_loss)
 
         if trial:
-            trial.report(val_loss, epoch)
+            trial.report(val_loss.item(), epoch)
             if trial.should_prune():
                 raise optuna.exceptions.TrialPruned()
 
@@ -211,7 +212,8 @@ def train_and_eval_phase(
             best_val = val_loss
             epochs_no_improve = 0
             os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-            torch.save(phase_model.state_dict(), os.path.join(CHECKPOINT_DIR, "phi_best.pt"))
+            torch.save(phase_model.state_dict(),
+                       os.path.join(CHECKPOINT_DIR, "phase_best.pt"))
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= patience:
@@ -221,13 +223,13 @@ def train_and_eval_phase(
 
 # Optuna objectives
 def objective_amp(trial):
-    lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    amp_size = trial.suggest_categorical("amp_hidden_size", [64, 128, 256])
-    banks = trial.suggest_int("banks", 1, 4)
-    dropout = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
+    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    amp_size   = trial.suggest_categorical("amp_hidden_size", [64, 128, 256])
+    banks      = trial.suggest_int("banks", 1, 4)
+    dropout    = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
     num_layers = trial.suggest_int("layers", 3, 5)
+    amp_h      = [amp_size] * num_layers
 
-    amp_h = [amp_size] * num_layers
     return train_and_eval_amp(
         DATA,
         amp_h,
@@ -243,13 +245,13 @@ def objective_amp(trial):
 
 
 def objective_phase(trial):
-    lr = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     phase_size = trial.suggest_categorical("phase_hidden_size", [64, 128, 256])
-    banks = trial.suggest_int("banks", 1, 4)
-    dropout = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
+    banks      = trial.suggest_int("banks", 1, 4)
+    dropout    = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
     num_layers = trial.suggest_int("layers", 3, 5)
+    phase_h    = [phase_size] * num_layers
 
-    phase_h = [phase_size] * num_layers
     return train_and_eval_phase(
         DATA,
         phase_h,
@@ -287,14 +289,11 @@ if __name__ == "__main__":
     amp_study.optimize(
         objective_amp,
         n_trials=HPO_CFG.n_trials,
-        timeout=HPO_CFG.timeout,
-        n_jobs=2
+        timeout=HPO_CFG.timeout
     )
-    amp_params = amp_study.best_params
-    amp_meta_path = os.path.join(CHECKPOINT_DIR, "amp_params.json")
-    with open(amp_meta_path, 'w') as f:
-        json.dump(amp_params, f, indent=2)
-    logging.info("[AMP] best hyperparameters saved to %s", amp_meta_path)
+    with open(os.path.join(CHECKPOINT_DIR, "amp_params.json"), 'w') as f:
+        json.dump(amp_study.best_params, f, indent=2)
+    logging.info("[AMP] best hyperparameters saved to amp_params.json")
 
     # Phase study
     phase_study = optuna.create_study(
@@ -308,19 +307,16 @@ if __name__ == "__main__":
     phase_study.optimize(
         objective_phase,
         n_trials=HPO_CFG.n_trials,
-        timeout=HPO_CFG.timeout,
-        n_jobs=2
+        timeout=HPO_CFG.timeout
     )
-    phase_params = phase_study.best_params
-    phase_meta_path = os.path.join(CHECKPOINT_DIR, "phase_params.json")
-    with open(phase_meta_path, 'w') as f:
-        json.dump(phase_params, f, indent=2)
-    logging.info("[PHASE] best hyperparameters saved to %s", phase_meta_path)
+    with open(os.path.join(CHECKPOINT_DIR, "phase_params.json"), 'w') as f:
+        json.dump(phase_study.best_params, f, indent=2)
+    logging.info("[PHASE] best hyperparameters saved to phase_params.json")
 
     # Notification
     try:
         notify_discord(
-            f"Tuning complete! AMP params: {amp_params}, PHASE params: {phase_params}"
+            f"Tuning complete! AMP params: {amp_study.best_params}, PHASE params: {phase_study.best_params}"
         )
     except Exception:
         pass

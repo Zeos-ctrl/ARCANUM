@@ -4,28 +4,28 @@ pycbc:
     delta_t:         2048
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 1024
+    waveform_length: 2048
 
   phenomd:
-    waveform_name:   "IMRPhenomPv2"
-    delta_t:         2048
+    waveform_name:   "IMRPhenomD"
+    delta_t:         1024
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 16384
+    waveform_length: 2048
 
 model:
   amp_emb_hidden: [64,64]
-  amp_hidden: [128,128,128,128]
-  amp_banks: 3
+  amp_hidden: [256,256,256,256]
+  amp_banks: 4
   phase_emb_hidden: [64,64]
-  phase_hidden: [128,128,128,128]
-  phase_banks: 3
+  phase_hidden: [256,256,256,256,256]
+  phase_banks: 4
 
 sampling_ranges:
   mass_min:     20.0
   mass_max:     50.0
-  spin_mag_min: -0.9
-  spin_mag_max:  0.9
+  spin_mag_min: -0.3
+  spin_mag_max:  0.3
   incl_min:      0.0
   incl_max:      3.141592653589793
   ecc_min:       0.0
@@ -42,11 +42,11 @@ training:
 
   # Optimization
   optimizer:      "adam"
-  learning_rate:  0.0001
+  learning_rate:  0.005
   weight_decay:   0.1
 
   # Batching & epochs
-  batch_size:     512
+  batch_size:     256
   num_epochs:     200
   patience:       50
   min_delta:      1e-6
@@ -57,12 +57,6 @@ training:
     lr_decay_factor: 0.5
     lr_patience:     10
     min_lr:          1e-6
-
-  # Fine‑tuning
-  fine_tune:
-    enable:         true
-    epochs:         50
-    learning_rate:  0.0001
 
   # Hyperparameter search
   hpo:
@@ -78,7 +72,7 @@ device: "cuda"
 notifications:
   webhook_url:  
     "https://discord.com/api/webhooks/1392085647480721428/wDGdLRmMXrStJXhobZTjkAa4SrW35BKoRTMcdLKBFDdq-qiECTjD-2SYLa4cLL3ZU2Bx"
-  discord_bot_token: "MTM5MjE0MDE1ODg1NzUxNTAxOA.GPDujQ.yM-i8yzG-p6tV0LrvpyoBdjvEjNGUgKq1LdX0U"
+  discord_bot_token: ""
   status_channel_id: 1392085614375206932
   guild_id: 1392085562323636348
 

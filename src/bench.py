@@ -56,7 +56,7 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         # Network prediction
         logger.debug("Starting Network batch prediction for %d waveforms", h_true.shape[0])
         t0 = time.perf_counter()
-        h_plus, h_cross = predictor.batch_predict(valid_thetas, batch_size=n)
+        h_plus, h_cross = predictor.batch_predict(valid_thetas, batch_size=100)
         t_pred = time.perf_counter() - t0
         logger.info("Network predicted %d waveforms in %.3fs", n, t_pred)
 

@@ -67,7 +67,7 @@ def evaluate():
     phi_res_wrapped = (dphi + np.pi) % (2*np.pi) - np.pi
 
     # set up figure: 2 rows × 4 cols
-    fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharex=True)
+    fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharex=False)
     fig.suptitle(f"{title_str}", fontsize=16)
 
     # Top row: true vs pred
@@ -102,6 +102,7 @@ def evaluate():
     ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
     ax.set_ylim(0, 2*np.pi)
+    ax.set_xlim(-0.6, -0.4)
     ax.legend()
 
     # Bottom row: residuals
