@@ -15,11 +15,11 @@ from tqdm import tqdm
 import matplotlib.pyplot as plt
 
 # Library imports
-from src.config import *
-from src.dataset import generate_data
-from src.power_monitor import PowerMonitor
-from src.model import PhaseDNN_Full, AmplitudeDNN_Full
-from src.utils import save_checkpoint, notify_discord
+from src.data.config import *
+from src.data.dataset import generate_data
+from src.utils.power_monitor import PowerMonitor
+from src.models.model_factory import make_phase_model, make_amp_model
+from src.utils.utils import save_checkpoint, notify_discord
 
 logger = logging.getLogger(__name__)
 
@@ -254,22 +254,12 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         logger.info(f"Training on {features} features: {TRAIN_FEATURES}")
 
         # Instantiate fresh models
-        amp_model = AmplitudeDNN_Full(
+        amp_model = make_amp_model(
             in_param_dim=features,
-            time_dim=1,
-            emb_hidden=AMP_EMB_HIDDEN,
-            amp_hidden=AMP_HIDDEN,
-            N_banks=AMP_BANKS,
-            dropout=0.0
         ).to(DEVICE)
 
-        phase_model = PhaseDNN_Full(
-                param_dim=features,
-                time_dim=1,
-                emb_hidden=PHASE_EMB_HIDDEN,
-                phase_hidden=PHASE_HIDDEN,
-                N_banks=PHASE_BANKS,
-                dropout=0.1
+        phase_model = make_phase_model(
+            param_dim=features,
         ).to(DEVICE)
 
         # Stage 1: amplitude alone

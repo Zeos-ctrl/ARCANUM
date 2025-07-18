@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
-from src.dataset import sample_parameters
-from src.config import MASS_MIN, MASS_MAX, NUM_SAMPLES
+from src.data.dataset import sample_parameters
+from src.data.config import MASS_MIN, MASS_MAX, NUM_SAMPLES
 
 def test_sample_parameters_shape():
     n = 100

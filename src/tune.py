@@ -9,14 +9,14 @@ from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
-from src.config import (
+from src.data.config import (
     DEVICE, TRAINING, HPO_CFG, SCHEDULER_CFG,
     VAL_SPLIT, RANDOM_SEED, CHECKPOINT_DIR,
     GRADIENT_CLIP, AMP_EMB_HIDDEN, PHASE_EMB_HIDDEN
 )
-from src.dataset import generate_data
-from src.model import AmplitudeDNN_Full, PhaseDNN_Full
-from src.utils import notify_discord
+from src.data.dataset import generate_data
+from src.models.model_factory import make_amp_model, make_phase_model
+from src.utils.utils import notify_discord
 
 HPO_SAMPLE_COUNT = 10
 DATA = generate_data(samples=HPO_SAMPLE_COUNT)
@@ -64,14 +64,9 @@ def train_and_eval_amp(
 
     # Instantiate model
     features = X.size(1) - 1
-    amp_model = AmplitudeDNN_Full(
+    amp_model = make_amp_model(
         in_param_dim=features,
-        time_dim=1,
-        emb_hidden=AMP_EMB_HIDDEN,
-        amp_hidden=amp_hidden_dims,
-        N_banks=banks,
-        dropout=dropout
-    ).to(device)
+    ).to(DEVICE)
 
     optimizer = torch.optim.Adam(amp_model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(
@@ -159,14 +154,11 @@ def train_and_eval_phase(
     }
 
     features = X.size(1) - 1
-    phase_model = PhaseDNN_Full(
+
+    phase_model = make_phase_model(
         param_dim=features,
-        time_dim=1,
-        emb_hidden=PHASE_EMB_HIDDEN,
-        phase_hidden=phase_hidden_dims,
-        N_banks=banks,
-        dropout=dropout
-    ).to(device)
+    ).to(DEVICE)
+
 
     optimizer = torch.optim.Adam(phase_model.parameters(), lr=learning_rate)
     scheduler = ReduceLROnPlateau(

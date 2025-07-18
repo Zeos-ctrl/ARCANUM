@@ -1,8 +1,8 @@
 import pytest
 import numpy as np
 from pycbc.psd import aLIGOZeroDetHighPower
-from src.config import WAVEFORM_LENGTH, DELTA_T
-from src.dataset import make_waveform, make_noisy_waveform, sample_parameters
+from src.data.config import WAVEFORM_LENGTH, DELTA_T
+from src.data.dataset import make_waveform, make_noisy_waveform, sample_parameters
 
 def test_make_waveform_length():
     theta = sample_parameters(1)[0]

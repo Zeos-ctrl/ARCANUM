@@ -1,7 +1,7 @@
 import pytest
 import numpy as np
-from src.dataset import generate_data
-from src.config import WAVEFORM_LENGTH, NUM_SAMPLES, TRAIN_FEATURES
+from src.data.dataset import generate_data
+from src.data.config import WAVEFORM_LENGTH, NUM_SAMPLES, TRAIN_FEATURES
 
 def test_generate_data_shapes():
     dataset = generate_data()

@@ -1,6 +1,6 @@
 import os, logging, discord
 from discord import app_commands
-from src.config import DISCORD_BOT_TOKEN, GUILD_ID, STATUS_CHANNEL_ID
+from src.data.config import DISCORD_BOT_TOKEN, GUILD_ID, STATUS_CHANNEL_ID
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
