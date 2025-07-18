@@ -270,8 +270,8 @@ class WaveformPredictor:
             batch_size = self.train_samples
 
         # precompute time grids
-        real_time = np.linspace(-L*dt, 0.0, L)
-        time_norm = 2*(t_real + L*dt)/(L*dt) - 1
+        real_time = np.linspace(-length*delta_t, 0.0, length)
+        time_norm = 2*(real_time + length*delta_t)/(length*delta_t) - 1
 
         D = len(TRAIN_FEATURES)
         all_amp, all_phi = [], []
@@ -296,14 +296,14 @@ class WaveformPredictor:
             theta_norm = (derived - self.param_means) / self.param_stds
 
             # build and flatten model input (B*L,1+D)
-            t_blk = np.broadcast_to(t_norm, (B, length))
-            p_blk = np.broadcast_to(theta_n[:,None,:], (B, length, D))
+            t_blk = np.broadcast_to(time_norm, (B, length))
+            p_blk = np.broadcast_to(theta_norm[:,None,:], (B, length, D))
             flat  = np.concatenate([t_blk[...,None], p_blk], axis=-1).reshape(-1,1+D).astype(np.float32)
 
             inp_t = torch.from_numpy(flat).to(self.device)
             with torch.no_grad():
-                Amp_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, L)
-                phase  = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, L)
+                Amp_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, length)
+                phase  = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, length)
 
             all_amp.append(Amp_norm)
             all_phi.append(phase)
@@ -312,8 +312,7 @@ class WaveformPredictor:
         phi_mat = np.vstack(all_phi)   # (N,L)
 
         # reconstruct plus/cross
-        inc_idx = TRAIN_FEATURES.index("inclination")
-        incls   = derived[:, inc_idx]
+        incls   = thetas_raw[:, 3]
         cosi    = np.cos(incls)[:,None]
 
         amp_mat = self.inverse_log_norm(Amp_mat)
@@ -326,17 +325,17 @@ class WaveformPredictor:
             h_plus_list.append(TimeSeriesStrainData(
                 data        = h_plus[i],
                 uncertainty = h_plus[i],
-                epoch       = t_real[0],
+                epoch       = real_time[0],
                 sample_rate = delta_t,
-                time        = t_norm,
+                time        = time_norm,
                 approximant = WAVEFORM
             ))
             h_cross_list.append(TimeSeriesStrainData(
                 data        = h_cross[i],
                 uncertainty = h_cross[i],
-                epoch       = t_real[0],
+                epoch       = real_time[0],
                 sample_rate = delta_t,
-                time        = t_norm,
+                time        = time_norm,
                 approximant = WAVEFORM
             ))
 

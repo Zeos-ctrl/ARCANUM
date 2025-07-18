@@ -23,7 +23,6 @@ from src.utils import save_checkpoint, notify_discord
 
 logger = logging.getLogger(__name__)
 
-
 def compute_last_layer_hessian_diag(
     model: nn.Module,
     loader: DataLoader,
@@ -32,12 +31,11 @@ def compute_last_layer_hessian_diag(
 ):
     """
     Approximate the diagonal of the Hessian of MSELoss wrt the final Linear layer’s
-    weights and bias, using a forward‐hook to capture the penultimate features φ.
+    weights and bias, using a forward‐hook to capture the penultimate features phi.
     Returns:
       weight_variances: Tensor of shape (1, in_features)
       bias_variance:    Tensor scalar shape (1,)
     """
-    # 1) find the last Linear(out_features==1) in module order
     linears = [
         m for m in model.modules()
         if isinstance(m, nn.Linear) and m.out_features == 1
@@ -45,43 +43,36 @@ def compute_last_layer_hessian_diag(
     assert linears, "No final Linear layer with out_features=1 found!"
     final_linear = linears[-1]
 
-    # 2) prepare accumulators
-    W = final_linear.weight               # shape (1, in_features)
-    B = final_linear.bias                 # shape (1,)
+    # prepare accumulators
+    W = final_linear.weight
+    B = final_linear.bias
     H_w = torch.zeros_like(W, device=device)
     H_b = torch.zeros_like(B, device=device)
 
-    # 3) hook to grab the input features φ whenever final_linear runs
+    # hook to grab the input features phi whenever final_linear runs
     captured = {"phi": None}
     def hook_fn(module, inputs, output):
-        # inputs is a tuple; inputs[0] is φ of shape (batch, in_features)
         captured["phi"] = inputs[0].detach()
 
     hook = final_linear.register_forward_hook(hook_fn)
 
-    # 4) sweep once over the loader
+    # sweep once over the loader
     model.eval()
     with torch.no_grad():
         for batch in loader:
-            # our loaders['amp']['train'] yields (X, A), loaders['phase']['train'] yields (X, φ)
             X, Y = batch[0].to(device), batch[1].to(device)
-            # forward through the entire model (we only care about capturing φ)
-            _ = model(X[:, :1], X[:, 1:])  # or model(X) depending on your signature
+            _ = model(X[:, :1], X[:, 1:])
 
-            phi = captured["phi"]          # shape (B, in_features)
+            phi = captured["phi"]
             B_size = phi.shape[0]
 
-            # for MSELoss, Hessian wrt w is (1/noise_variance) * (φ^2 summed over batch)
             H_w += (phi ** 2).sum(dim=0, keepdim=True) / noise_var
-            # bias term Hessian is (1/noise_variance) * 1 for each sample
             H_b += torch.ones_like(B) * (B_size / noise_var)
 
-    # 5) unhook
     hook.remove()
 
-    # 6) invert diagonal to get posterior variances
-    weight_variances = 1.0 / H_w    # shape (1, in_features)
-    bias_variance    = 1.0 / H_b    # shape (1,)
+    weight_variances = 1.0 / H_w
+    bias_variance    = 1.0 / H_b
 
     return weight_variances, bias_variance
 
@@ -121,10 +112,10 @@ def make_loaders(data):
     return loaders
 
 
-def train_amp_only(amp_model, loaders, checkpoint_dir):
+def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 1: training amplitude network only")
     # Freeze phase net entirely
-    optimizer = optim.Adam(amp_model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(amp_model.parameters(), lr=0.0004138040112561013)
     scheduler = ReduceLROnPlateau(
         optimizer, mode="min",
         factor=float(SCHEDULER_CFG.lr_decay_factor),
@@ -136,7 +127,7 @@ def train_amp_only(amp_model, loaders, checkpoint_dir):
     wait = 0
     criterion = nn.MSELoss()
 
-    for epoch in range(1, NUM_EPOCHS + 1):
+    for epoch in range(1, max_epochs + 1):
         # Train
         amp_model.train()
         train_loss = 0.0; cnt = 0
@@ -186,9 +177,9 @@ def train_amp_only(amp_model, loaders, checkpoint_dir):
     return amp_model
 
 
-def train_phase_only(phase_model, loaders, checkpoint_dir):
+def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 2: training phase network only")
-    optimizer = optim.Adam(phase_model.parameters(), lr=LEARNING_RATE)
+    optimizer = optim.Adam(phase_model.parameters(), lr=0.0007234279845665417)
     scheduler = ReduceLROnPlateau(
         optimizer, mode="min",
         factor=float(SCHEDULER_CFG.lr_decay_factor),
@@ -200,7 +191,7 @@ def train_phase_only(phase_model, loaders, checkpoint_dir):
     wait = 0
     criterion = nn.MSELoss()
 
-    for epoch in range(1, NUM_EPOCHS + 1):
+    for epoch in range(1, max_epochs + 1):
         # Train
         phase_model.train()
         train_loss = 0.0; cnt = 0
@@ -269,7 +260,7 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
             emb_hidden=AMP_EMB_HIDDEN,
             amp_hidden=AMP_HIDDEN,
             N_banks=AMP_BANKS,
-            dropout=0.1
+            dropout=0.0
         ).to(DEVICE)
 
         phase_model = PhaseDNN_Full(
