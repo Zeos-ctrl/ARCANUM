@@ -18,7 +18,7 @@ from src.data.dataset import generate_data
 from src.models.model_factory import make_amp_model, make_phase_model
 from src.utils.utils import notify_discord
 
-HPO_SAMPLE_COUNT = 10
+HPO_SAMPLE_COUNT = 50
 DATA = generate_data(samples=HPO_SAMPLE_COUNT)
 storage = "sqlite:///optuna_study.db"
 
@@ -39,6 +39,8 @@ def train_and_eval_amp(
     banks,
     dropout,
     learning_rate,
+    weight_decay,
+    clip,
     batch_size,
     num_epochs,
     patience,
@@ -68,7 +70,7 @@ def train_and_eval_amp(
         in_param_dim=features,
     ).to(DEVICE)
 
-    optimizer = torch.optim.Adam(amp_model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(amp_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -91,7 +93,7 @@ def train_and_eval_amp(
             loss = criterion(A_pred, Ab)
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
+            torch.nn.utils.clip_grad_norm_(amp_model.parameters(), clip)
             optimizer.step()
 
         # Validation
@@ -131,6 +133,8 @@ def train_and_eval_phase(
     banks,
     dropout,
     learning_rate,
+    weight_decay,
+    clip,
     batch_size,
     num_epochs,
     patience,
@@ -160,7 +164,7 @@ def train_and_eval_phase(
     ).to(DEVICE)
 
 
-    optimizer = torch.optim.Adam(phase_model.parameters(), lr=learning_rate)
+    optimizer = torch.optim.Adam(phase_model.parameters(), lr=learning_rate, weight_decay=weight_decay)
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -182,7 +186,7 @@ def train_and_eval_phase(
             loss = criterion(phase_model(t_norm, theta), Phib)
             optimizer.zero_grad()
             loss.backward()
-            torch.nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
+            torch.nn.utils.clip_grad_norm_(phase_model.parameters(), clip)
             optimizer.step()
 
         # Validate
@@ -216,10 +220,12 @@ def train_and_eval_phase(
 # Optuna objectives
 def objective_amp(trial):
     lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    amp_size   = trial.suggest_categorical("amp_hidden_size", [64, 128, 256])
-    banks      = trial.suggest_int("banks", 1, 4)
-    dropout    = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
-    num_layers = trial.suggest_int("layers", 3, 5)
+    amp_size   = trial.suggest_categorical("amp_hidden_size", [64, 128, 256, 512])
+    banks      = trial.suggest_int("banks", 1, 6)
+    dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)
+    num_layers = trial.suggest_int("layers", 3, 6)
+    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-2, log=True)
+    clip = trial.suggest_float("grad_clip", 0.1, 5.0)
     amp_h      = [amp_size] * num_layers
 
     return train_and_eval_amp(
@@ -228,6 +234,8 @@ def objective_amp(trial):
         banks,
         dropout,
         lr,
+        weight_decay,
+        clip,
         TRAINING.batch_size,
         TRAINING.num_epochs,
         TRAINING.patience,
@@ -238,10 +246,12 @@ def objective_amp(trial):
 
 def objective_phase(trial):
     lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    phase_size = trial.suggest_categorical("phase_hidden_size", [64, 128, 256])
-    banks      = trial.suggest_int("banks", 1, 4)
-    dropout    = trial.suggest_float("dropout", 0.0, 0.3, step=0.1)
-    num_layers = trial.suggest_int("layers", 3, 5)
+    phase_size = trial.suggest_categorical("phase_hidden_size", [64, 128, 256, 512])
+    banks      = trial.suggest_int("banks", 1, 6)
+    dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)
+    num_layers = trial.suggest_int("layers", 3, 6)
+    weight_decay = trial.suggest_float("weight_decay", 1e-8, 1e-2, log=True)
+    clip = trial.suggest_float("grad_clip", 0.1, 5.0)
     phase_h    = [phase_size] * num_layers
 
     return train_and_eval_phase(
@@ -250,6 +260,8 @@ def objective_phase(trial):
         banks,
         dropout,
         lr,
+        weight_decay,
+        clip,
         TRAINING.batch_size,
         TRAINING.num_epochs,
         TRAINING.patience,
