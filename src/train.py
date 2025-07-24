@@ -16,8 +16,8 @@ import matplotlib.pyplot as plt
 
 # Library imports
 from src.data.config import *
-from src.data.dataset import generate_data
 from src.utils.power_monitor import PowerMonitor
+from src.data.dataset import generate_data, sizeof_tensor
 from src.models.model_factory import make_phase_model, make_amp_model
 from src.utils.utils import save_checkpoint, notify_discord
 
@@ -81,6 +81,20 @@ def make_loaders(data):
     X = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total,7)
     A = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total,1)
     phi = torch.from_numpy(data.targets_phi).to(DEVICE)  # (N_total,1)
+
+    bytes_X   = sizeof_tensor(X)
+    bytes_A   = sizeof_tensor(A)
+    bytes_phi = sizeof_tensor(phi)
+    logger.info(f" -> GPU tensors allocated:"
+                f"  X={bytes_X/1024**2:.1f} MB,"
+                f"  A={bytes_A/1024**2:.1f} MB,"
+                f"  phi={bytes_phi/1024**2:.1f} MB")
+
+    if DEVICE == 'cuda':
+        used = torch.cuda.memory_allocated(DEVICE)
+        reserved = torch.cuda.memory_reserved(DEVICE)
+        logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
+                    f" reserved={reserved/1024**3:.3f} GB")
 
     idx = list(range(X.size(0)))
     train_idx, val_idx = train_test_split(

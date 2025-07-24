@@ -200,7 +200,7 @@ def cross_correlation_fixed_q(
         h_pred = amp_pred * np.cos(phi_pred)
 
         # Compute match (normalized cross-correlation)
-        match = compute_match(h_true, h_pred)
+        match, _ = compute_match(h_true, h_pred)
 
         # Record
         qs.append(q)

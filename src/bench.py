@@ -73,7 +73,7 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         logger.debug("Computing matches for each pair")
         matches = []
         for i in range(h_true.shape[0]):
-            m = compute_match(h_true[i], h_plus[i].data)
+            m, _ = compute_match(h_true[i], h_plus[i].data)
             matches.append(m)
         matches = np.array(matches)
 

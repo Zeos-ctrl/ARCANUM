@@ -1,8 +1,6 @@
 import os
+import logging
 import torch
-from src.data.dataset import generate_data
-from src.train import make_loaders
-from src.models.model_factory import *
 from torch.profiler import (
     profile,
     record_function,
@@ -10,124 +8,87 @@ from torch.profiler import (
     schedule,
     tensorboard_trace_handler
 )
+from src.data.dataset import generate_data
+from src.train import train_and_save, make_loaders, train_amp_only, train_phase_only
+from src.models.model_factory import make_amp_model, make_phase_model
+from src.data.config import DEVICE
 
-def quick_train_steps(
-    amp_model: torch.nn.Module,
-    phase_model: torch.nn.Module,
-    loaders: dict,
-    max_steps: int,
-    device: torch.device,
-    prof
+logger = logging.getLogger(__name__)
+
+def profile_real_training(
+    max_steps: int = 20,
+    logdir: str = "logs/profiler"
 ):
-    """
-    Run exactly max_steps of amplitude + phase training batches,
-    calling prof.step() once per batch so the profiler can advance.
-    """
-    amp_optimizer   = torch.optim.Adam(amp_model.parameters())
-    phase_optimizer = torch.optim.Adam(phase_model.parameters())
-    criterion       = torch.nn.MSELoss()
-
-    amp_iter   = iter(loaders['amp']['train'])
-    phase_iter = iter(loaders['phase']['train'])
-
-    amp_model.train()
-    phase_model.train()
-
-    step = 0
-    while step < max_steps:
-        # ——— Amp step ———
-        try:
-            X_amp, A_true = next(amp_iter)
-        except StopIteration:
-            amp_iter = iter(loaders['amp']['train'])
-            X_amp, A_true = next(amp_iter)
-
-        X_amp, A_true = X_amp.to(device), A_true.to(device)
-        t_norm, theta = X_amp[:, :1], X_amp[:, 1:]
-        amp_pred = amp_model(t_norm, theta)
-        loss_amp = criterion(amp_pred, A_true)
-
-        amp_optimizer.zero_grad()
-        loss_amp.backward()
-        amp_optimizer.step()
-
-        # ——— Phase step ———
-        try:
-            X_ph, phi_true = next(phase_iter)
-        except StopIteration:
-            phase_iter = iter(loaders['phase']['train'])
-            X_ph, phi_true = next(phase_iter)
-
-        X_ph, phi_true = X_ph.to(device), phi_true.to(device)
-        t_norm, theta  = X_ph[:, :1], X_ph[:, 1:]
-        phi_pred       = phase_model(t_norm, theta)
-        loss_ph        = criterion(phi_pred, phi_true)
-
-        phase_optimizer.zero_grad()
-        loss_ph.backward()
-        phase_optimizer.step()
-
-        # ——— Profiler step ———
-        prof.step()
-        step += 1
-
-
-def profile_training(
-    amp_model: torch.nn.Module,
-    phase_model: torch.nn.Module,
-    loaders: dict,
-    device: torch.device,
-    max_steps: int = 5,
-    logdir: str = "profiler_logs"
-):
-    """
-    Profile exactly `max_steps` of quick_train_steps(), writing a TensorBoard
-    trace to `logdir`. Only one of those steps is recorded (after a 1-step warmup).
-    """
     os.makedirs(logdir, exist_ok=True)
 
-    # schedule: skip 1 warmup, record 1 step
-    prof_schedule = schedule(wait=0, warmup=1, active=1, repeat=1)
+    # Get data, loaders, models
+    data    = generate_data(samples=1000)
+    loaders = make_loaders(data)
+    features = data.inputs.shape[1] - 1
 
+    amp_model = make_amp_model(in_param_dim=features).to(DEVICE)
+    phase_model = make_phase_model(param_dim=features).to(DEVICE)
+
+    # Choose a schedule
+    prof_sched = schedule(wait=1, warmup=1, active=2, repeat=1)
+
+    # Create the profiler context
     with profile(
         activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        schedule=prof_schedule,
+        schedule=prof_sched,
         on_trace_ready=tensorboard_trace_handler(logdir),
-        record_shapes=False,
-        profile_memory=False,
-        with_stack=False,
+        record_shapes=True,
+        profile_memory=True,
+        with_stack=True,
     ) as prof:
-        with record_function("quick_train"):
-            quick_train_steps(
-                amp_model=amp_model,
-                phase_model=phase_model,
-                loaders=loaders,
-                max_steps=max_steps,
-                device=device,
-                prof=prof
-            )
 
-    print(f"Profiler data written to {logdir}")
-    print(f"Run:\n  tensorboard --logdir={logdir}")
+        step = 0
+        amp_iter   = iter(loaders['amp']['train'])
+        phase_iter = iter(loaders['phase']['train'])
+        amp_opt   = torch.optim.Adam(amp_model.parameters())
+        phase_opt = torch.optim.Adam(phase_model.parameters())
+        loss_fn   = torch.nn.MSELoss()
 
-if __name__ == '__main__':
-    data    = generate_data(samples=500)
-    loaders = make_loaders(data)
+        amp_model.train(); phase_model.train()
 
-    features    = data.inputs.shape[1] - 1
-    amp_model = make_amp_model(
-        in_param_dim=features,
-    ).to(DEVICE)
+        while step < max_steps:
+            with record_function("amp_step"):
+                try:
+                    X_amp, A_true = next(amp_iter)
+                except StopIteration:
+                    amp_iter = iter(loaders['amp']['train'])
+                    X_amp, A_true = next(amp_iter)
+                X_amp, A_true = X_amp.to(DEVICE), A_true.to(DEVICE)
+                t_norm, theta = X_amp[:, :1], X_amp[:, 1:]
+                loss_amp = loss_fn(amp_model(t_norm, theta), A_true)
+                amp_opt.zero_grad(); loss_amp.backward(); amp_opt.step()
 
-    phase_model = make_phase_model(
-        param_dim=features,
-    ).to(DEVICE)
+            with record_function("phase_step"):
+                try:
+                    X_ph, phi_true = next(phase_iter)
+                except StopIteration:
+                    phase_iter = iter(loaders['phase']['train'])
+                    X_ph, phi_true = next(phase_iter)
+                X_ph, phi_true = X_ph.to(DEVICE), phi_true.to(DEVICE)
+                t_norm, theta = X_ph[:, :1], X_ph[:, 1:]
+                loss_ph = loss_fn(phase_model(t_norm, theta), phi_true)
+                phase_opt.zero_grad(); loss_ph.backward(); phase_opt.step()
 
-    profile_training(
-        amp_model=amp_model,
-        phase_model=phase_model,
-        loaders=loaders,
-        device=DEVICE,
-        max_steps=10,
-        logdir="profiler_logs/quick"
+            prof.step()
+            step += 1
+
+    logger.info(f"Profiler trace written to {logdir}")
+    logger.info(f"Run: tensorboard --logdir={logdir}")
+
+if __name__ == "__main__":
+    os.makedirs("logs", exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler("logs/profiler.log", mode='a')
+        ]
     )
+
+    profile_real_training()
