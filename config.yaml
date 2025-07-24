@@ -1,10 +1,10 @@
 pycbc:
   seobnrv4:
     waveform_name:   "SEOBNRv4"
-    delta_t:         2048
+    delta_t:         1024
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 2048
+    waveform_length: 512
 
   phenomd:
     waveform_name:   "IMRPhenomD"
@@ -46,7 +46,7 @@ training:
   weight_decay:   0.1
 
   # Batching & epochs
-  batch_size:     256
+  batch_size:     2056
   num_epochs:     200
   patience:       50
   min_delta:      1e-6

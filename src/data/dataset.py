@@ -1,4 +1,6 @@
 # General Utils
+import sys
+import psutil
 import logging
 import numpy as np
 from scipy.stats import qmc
@@ -32,6 +34,12 @@ class GeneratedDataset:
     param_stds: np.ndarray    # (5,)
     theta_norm: np.ndarray    # (N,5)
     t_norm_array: np.ndarray  # (L,)
+
+def sizeof_numpy_array(arr):
+    return arr.nbytes
+
+def sizeof_tensor(t):
+    return t.element_size() * t.nelement()
 
 def sample_parameters(n, seed=None, method="lhs"):
     """
@@ -197,7 +205,7 @@ def generate_data(
     targets_A   = all_log_amp_norm.reshape(-1,1)
     targets_phi = all_phi_unwrap.reshape(-1,1)
 
-    return GeneratedDataset(
+    dataset = GeneratedDataset(
         inputs=inputs.astype(np.float32),
         targets_A=targets_A.astype(np.float32),
         targets_phi=targets_phi.astype(np.float32),
@@ -211,3 +219,21 @@ def generate_data(
         theta_norm=theta_norm,
         t_norm_array=t_norm,
     )
+
+    # logging of RAM footprint
+    arrays = [
+        dataset.inputs,
+        dataset.targets_A,
+        dataset.targets_phi,
+        dataset.thetas,
+        dataset.phi_unwrap
+    ]
+    total_bytes = sum(sizeof_numpy_array(a) for a in arrays)
+    logger.info(f" Dataset in‐memory size: {total_bytes/1024**3:.3f} GB "
+                f"({total_bytes/1024**2:.1f} MB)")
+
+    proc = psutil.Process(os.getpid())
+    rss = proc.memory_info().rss
+    logger.info(f" → Process RSS after data gen: {rss/1024**3:.3f} GB")
+
+    return dataset

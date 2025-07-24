@@ -81,20 +81,19 @@ def notify_discord(message: str, url: str = None):
         logger.error("Failed to send Discord notification: %s", e)
 
 def compute_match(h_true, h_pred):
-    """
-    Compute the normalized cross‑correlation match between two 1D arrays.
-    Returns a scalar in [0,1].
-    """
-    logger.debug("Computing waveform match...")
-    # zero‑mean
-    ht = h_true - np.mean(h_true)
-    hp = h_pred - np.mean(h_pred)
-    # full cross‑correlation
-    corr    = np.correlate(ht, hp, mode="full")
-    max_corr= np.max(corr)
-    norm    = np.sqrt(np.dot(ht, ht) * np.dot(hp, hp))
-    logger.debug(f"Spoiler alert match is: {max_corr / norm}")
-    return max_corr / norm
+    ht = h_true - h_true.mean()
+    hp = h_pred - h_pred.mean()
+    nt = np.linalg.norm(ht)
+    np_ = np.linalg.norm(hp)
+    if nt == 0 or np_ == 0:
+        return 0.0, 0
+    ht /= nt
+    hp /= np_
+    corr = np.correlate(ht, hp, mode="full")
+    idx = corr.argmax()
+    match = corr[idx]
+    lag = idx - (len(ht) - 1)
+    return match, lag
 
 @dataclass
 class TimeSeriesStrainData:
