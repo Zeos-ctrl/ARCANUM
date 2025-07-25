@@ -3,7 +3,6 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
-from sklearn.model_selection import train_test_split
 from torch.utils.data import DataLoader, TensorDataset
 from torch.optim.lr_scheduler import ReduceLROnPlateau
 
@@ -17,179 +16,134 @@ import matplotlib.pyplot as plt
 # Library imports
 from src.data.config import *
 from src.utils.power_monitor import PowerMonitor
-from src.data.dataset import generate_data, sizeof_tensor
 from src.models.model_factory import make_phase_model, make_amp_model
-from src.utils.utils import save_checkpoint, notify_discord
+from src.utils.utils import save_checkpoint, notify_discord, compute_last_layer_hessian_diag
+from src.data.dataset import generate_data, sizeof_tensor, GeneratedDataset, load_dataset, save_dataset, make_loaders
 
 logger = logging.getLogger(__name__)
 
-def compute_last_layer_hessian_diag(
-    model: nn.Module,
-    loader: DataLoader,
-    device: torch.device,
-    noise_var: float = 1.0
-):
+DATA_PATH = 'dataset.pt'
+
+def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS,
+                   match_weight: float = 0.1):
     """
-    Approximate the diagonal of the Hessian of MSELoss wrt the final Linear layer’s
-    weights and bias, using a forward‐hook to capture the penultimate features phi.
-    Returns:
-      weight_variances: Tensor of shape (1, in_features)
-      bias_variance:    Tensor scalar shape (1,)
+    Train the amplitude network with a composite loss:
+      loss = MSE + match_weight * (1 - batch_correlation)
+
+    batch_correlation = average over batch of
+      ( (A_true - mean) * (A_pred - mean) ) / (std_true * std_pred)
     """
-    linears = [
-        m for m in model.modules()
-        if isinstance(m, nn.Linear) and m.out_features == 1
-    ]
-    assert linears, "No final Linear layer with out_features=1 found!"
-    final_linear = linears[-1]
-
-    # prepare accumulators
-    W = final_linear.weight
-    B = final_linear.bias
-    H_w = torch.zeros_like(W, device=device)
-    H_b = torch.zeros_like(B, device=device)
-
-    # hook to grab the input features phi whenever final_linear runs
-    captured = {"phi": None}
-    def hook_fn(module, inputs, output):
-        captured["phi"] = inputs[0].detach()
-
-    hook = final_linear.register_forward_hook(hook_fn)
-
-    # sweep once over the loader
-    model.eval()
-    with torch.no_grad():
-        for batch in loader:
-            X, Y = batch[0].to(device), batch[1].to(device)
-            _ = model(X[:, :1], X[:, 1:])
-
-            phi = captured["phi"]
-            B_size = phi.shape[0]
-
-            H_w += (phi ** 2).sum(dim=0, keepdim=True) / noise_var
-            H_b += torch.ones_like(B) * (B_size / noise_var)
-
-    hook.remove()
-
-    weight_variances = 1.0 / H_w
-    bias_variance    = 1.0 / H_b
-
-    return weight_variances, bias_variance
-
-def make_loaders(data):
-    """Generate train/val loaders for amplitude & phase."""
-    X = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total,7)
-    A = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total,1)
-    phi = torch.from_numpy(data.targets_phi).to(DEVICE)  # (N_total,1)
-
-    bytes_X   = sizeof_tensor(X)
-    bytes_A   = sizeof_tensor(A)
-    bytes_phi = sizeof_tensor(phi)
-    logger.info(f" -> GPU tensors allocated:"
-                f"  X={bytes_X/1024**2:.1f} MB,"
-                f"  A={bytes_A/1024**2:.1f} MB,"
-                f"  phi={bytes_phi/1024**2:.1f} MB")
-
-    if DEVICE == 'cuda':
-        used = torch.cuda.memory_allocated(DEVICE)
-        reserved = torch.cuda.memory_reserved(DEVICE)
-        logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
-                    f" reserved={reserved/1024**3:.3f} GB")
-
-    idx = list(range(X.size(0)))
-    train_idx, val_idx = train_test_split(
-        idx, test_size=VAL_SPLIT,
-        random_state=RANDOM_SEED, shuffle=True
-    )
-
-    train_ds_amp = TensorDataset(X[train_idx], A[train_idx])
-    val_ds_amp   = TensorDataset(X[val_idx],   A[val_idx])
-    train_ds_phi = TensorDataset(X[train_idx], phi[train_idx])
-    val_ds_phi   = TensorDataset(X[val_idx],   phi[val_idx])
-    train_ds_joint = TensorDataset(X[train_idx], A[train_idx], phi[train_idx])
-    val_ds_joint   = TensorDataset(X[val_idx],   A[val_idx], phi[val_idx])
-
-    loaders = {
-        'amp': {
-            'train': DataLoader(train_ds_amp,   batch_size=BATCH_SIZE, shuffle=True),
-            'val':   DataLoader(val_ds_amp,     batch_size=BATCH_SIZE, shuffle=False)
-        },
-        'phase': {
-            'train': DataLoader(train_ds_phi,   batch_size=BATCH_SIZE, shuffle=True),
-            'val':   DataLoader(val_ds_phi,     batch_size=BATCH_SIZE, shuffle=False)
-        },
-        'joint': {
-            'train': DataLoader(train_ds_joint, batch_size=BATCH_SIZE, shuffle=True),
-            'val':   DataLoader(val_ds_joint,   batch_size=BATCH_SIZE, shuffle=False)
-        }
-    }
-    return loaders
-
-
-def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
-    logger.info("Stage 1: training amplitude network only")
-    # Freeze phase net entirely
+    logger.info("Stage 1: training amplitude network with match loss")
     optimizer = optim.Adam(amp_model.parameters(), lr=0.0004138040112561013)
     scheduler = ReduceLROnPlateau(
-        optimizer, mode="min",
+        optimizer,
+        mode="min",
         factor=float(SCHEDULER_CFG.lr_decay_factor),
         patience=int(SCHEDULER_CFG.lr_patience),
         min_lr=float(SCHEDULER_CFG.min_lr)
     )
+
     best_val = float('inf')
     best_state = None
     wait = 0
-    criterion = nn.MSELoss()
 
     for epoch in range(1, max_epochs + 1):
-        # Train
+        # ----- TRAINING -----
         amp_model.train()
-        train_loss = 0.0; cnt = 0
-        for X, A in tqdm(loaders['amp']['train'], desc=f"E{epoch} AMP Train", leave=False):
-            X, A = X.to(DEVICE), A.to(DEVICE)
-            t_norm, theta = X[:,:1], X[:,1:]
-            A_pred = amp_model(t_norm, theta)
-            loss = criterion(A_pred, A)
-            optimizer.zero_grad(); loss.backward()
-            nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
-            optimizer.step()
-            bs = X.size(0)
-            train_loss += loss.item()*bs; cnt += bs
-        train_loss /= cnt
+        total_train_loss = 0.0
+        total_samples = 0
 
-        # Validate
+        for X, A in tqdm(loaders['amp']['train'],
+                         desc=f"E{epoch} AMP Train",
+                         leave=False):
+            X, A = X.to(DEVICE), A.to(DEVICE)
+            t_norm, theta = X[:, :1], X[:, 1:]
+            A_pred = amp_model(t_norm, theta)
+
+            # Mean squared error
+            mse = F.mse_loss(A_pred, A, reduction='mean')
+
+            # Compute batch correlation
+            # subtract batch means
+            A_true_centered = A - A.mean(dim=0, keepdim=True)
+            A_pred_centered = A_pred - A_pred.mean(dim=0, keepdim=True)
+            # compute std dev, add small epsilon for stability
+            std_true = A_true_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
+            std_pred = A_pred_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
+            # normalized vectors
+            y_norm = A_true_centered / std_true
+            yhat_norm = A_pred_centered / std_pred
+            # correlation is average of elementwise product
+            corr = (y_norm * yhat_norm).mean()
+            match_loss = 1.0 - corr
+
+            # total loss
+            loss = mse + match_weight * match_loss
+
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(amp_model.parameters(),
+                                     GRADIENT_CLIP)
+            optimizer.step()
+
+            bs = X.size(0)
+            total_train_loss += loss.item() * bs
+            total_samples += bs
+
+        avg_train_loss = total_train_loss / total_samples
+
+        # ----- VALIDATION -----
         amp_model.eval()
-        val_loss = 0.0; cnt = 0
+        total_val_loss = 0.0
+        total_val_samples = 0
+
         with torch.no_grad():
             for X, A in loaders['amp']['val']:
                 X, A = X.to(DEVICE), A.to(DEVICE)
-                t_norm, theta = X[:,:1], X[:,1:]
-                loss = criterion(amp_model(t_norm, theta), A)
-                bs = X.size(0)
-                val_loss += loss.item()*bs; cnt += bs
-        val_loss /= cnt
-        scheduler.step(val_loss)
+                t_norm, theta = X[:, :1], X[:, 1:]
+                A_pred = amp_model(t_norm, theta)
 
-        # Checkpoint / early stop
-        if val_loss < best_val - MIN_DELTA:
-            best_val = val_loss; wait = 0
+                mse = F.mse_loss(A_pred, A, reduction='mean')
+                A_true_centered = A - A.mean(dim=0, keepdim=True)
+                A_pred_centered = A_pred - A_pred.mean(dim=0, keepdim=True)
+                std_true = A_true_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
+                std_pred = A_pred_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
+                y_norm = A_true_centered / std_true
+                yhat_norm = A_pred_centered / std_pred
+                corr = (y_norm * yhat_norm).mean()
+                match_loss = 1.0 - corr
+
+                loss = mse + match_weight * match_loss
+
+                bs = X.size(0)
+                total_val_loss += loss.item() * bs
+                total_val_samples += bs
+
+        avg_val_loss = total_val_loss / total_val_samples
+        scheduler.step(avg_val_loss)
+
+        if avg_val_loss < best_val - MIN_DELTA:
+            best_val = avg_val_loss
+            wait = 0
             best_state = amp_model.state_dict()
-            torch.save(best_state, os.path.join(checkpoint_dir, "amp_best.pt"))
-            logger.info(f"Epoch {epoch}: AMP val improved to {val_loss:.3e}")
+            torch.save(best_state,
+                       os.path.join(checkpoint_dir, "amp_best.pt"))
+            logger.info(f"Epoch {epoch}: AMP val improved to {avg_val_loss:.3e}")
         else:
             wait += 1
             if wait >= PATIENCE:
                 logger.info(f"AMP early stopping at epoch {epoch}")
                 break
 
-        tqdm.write(f"AMP Epoch {epoch} | Train={train_loss:.3e} | Val={val_loss:.3e}")
+        tqdm.write(f"AMP Epoch {epoch} | Train Loss={avg_train_loss:.3e} "
+                   f"| Val Loss={avg_val_loss:.3e} | Corr={corr:.3f}")
 
     # Restore best
-    if best_state:
+    if best_state is not None:
         amp_model.load_state_dict(best_state)
-        logger.info("Restored AMP best model")
-    return amp_model
+        logger.info("Restored AMP best model with match loss")
 
+    return amp_model
 
 def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 2: training phase network only")
@@ -261,7 +215,13 @@ def train_and_save(checkpoint_dir: str = "checkpoints"):
         logger.info("Checkpoint directory: %s", checkpoint_dir)
 
         # Generate data & loaders
-        data = generate_data()
+        if not os.path.exists(DATA_PATH):
+            logger.info("Dataset doesn't exist, generating a new one...")
+            data = generate_data()
+            save_dataset(data, DATA_PATH)
+        else:
+            logger.info(f"Dataset found, using {DATA_PATH}...")
+            data = load_dataset(DATA_PATH, device=DEVICE)
         loaders = make_loaders(data)
 
         features = len(TRAIN_FEATURES)

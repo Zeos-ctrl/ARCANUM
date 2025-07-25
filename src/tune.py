@@ -19,7 +19,16 @@ from src.models.model_factory import make_amp_model, make_phase_model
 from src.utils.utils import notify_discord
 
 HPO_SAMPLE_COUNT = 50
-DATA = generate_data(samples=HPO_SAMPLE_COUNT)
+DATA_PATH = 'dataset.pt'
+
+if not os.path.exists(DATA_PATH):
+    logger.info("Dataset doesn't exist, generating a new one...")
+    DATA = generate_data(samples=HPO_SAMPLE_COUNT)
+    save_dataset(DATA, DATA_PATH)
+else:
+    logger.info(f"Dataset found, using {DATA_PATH}...")
+    DATA = load_dataset(DATA_PATH, device=DEVICE)
+
 storage = "sqlite:///optuna_study.db"
 
 # Sampler & pruner shared between studies
