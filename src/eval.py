@@ -42,10 +42,6 @@ def evaluate():
 
     i = np.random.randint(0, 10)
     m1, m2, chi1z, chi2z, incl, ecc = data.thetas[i]
-    title_str = (f"m1={m1:.1f}, m2={m2:.1f}, "
-                 f"χ1z={chi1z:.2f}, χ2z={chi2z:.2f}, "
-                 f"incl={incl:.2f}, ecc={ecc:.2f}")
-    logger.info(f"Evaluating for parameters: {title_str}")
 
     # time grid & true targets
     time = data.time_unscaled
@@ -58,6 +54,7 @@ def evaluate():
     # model prediction
     t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, chi1z, chi2z, incl, ecc)
     h_pred      = amp_pred * np.cos(phi_pred)
+    match, _ = compute_match(h_true, h_pred)
 
     # wrapped phase and residuals
     phi_wr_true = np.mod(phi_true, 2*np.pi)
@@ -68,6 +65,11 @@ def evaluate():
 
     # set up figure: 2 rows × 4 cols
     fig, axes = plt.subplots(2, 4, figsize=(24, 10), sharex=False)
+    title_str = (f"m1={m1:.1f}, m2={m2:.1f}, "
+                 f"χ1z={chi1z:.2f}, χ2z={chi2z:.2f}, "
+                 f"incl={incl:.2f}, ecc={ecc:.2f}, "
+                 f"waveform match = {match}")
+    logger.info(f"Evaluating for parameters: {title_str}")
     fig.suptitle(f"{title_str}", fontsize=16)
 
     # Top row: true vs pred

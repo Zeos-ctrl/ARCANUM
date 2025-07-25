@@ -8,6 +8,8 @@ from scipy.signal import hilbert
 from dataclasses import dataclass
 from scipy.signal.windows import tukey
 from scipy.fft import fft, ifft
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.model_selection import train_test_split
 
 # PyCBC imports
 from pycbc import noise
@@ -237,3 +239,97 @@ def generate_data(
     logger.info(f" → Process RSS after data gen: {rss/1024**3:.3f} GB")
 
     return dataset
+
+def pick_batch_size(X, A, phi, safety=0.9, max_cap=None):
+    """Return the largest batch size that fits in (safety * free GPU mem)."""
+    # per‐sample byte footprint
+    N = X.size(0)
+    bytes_per = (
+        X.element_size()*X.nelement() +
+        A.element_size()*A.nelement() +
+        phi.element_size()*phi.nelement()
+    ) / N
+
+    props    = torch.cuda.get_device_properties(0)
+    total    = props.total_memory
+    reserved = torch.cuda.memory_reserved(0)
+    free_mem = total - reserved
+
+    batch = int((free_mem * safety) // bytes_per)
+    if max_cap is not None:
+        batch = min(batch, max_cap)
+    return max(batch, 1)
+
+def save_dataset(data, path='dataset.pt'):
+    """
+    Save the entire `data` object to disk.
+    """
+    torch.save(data, path)
+
+def load_dataset(path='dataset.pt', device='cuda'):
+    """
+    Load back the full `data` object exactly as it was.
+    If you need the tensors on GPU, we map_location accordingly.
+    """
+    data = torch.load(path, map_location='cpu', weights_only=False)
+    # move arrays onto GPU
+    if DEVICE == 'cuda':
+        data.inputs      = torch.from_numpy(data.inputs).to(device)
+        data.targets_A   = torch.from_numpy(data.targets_A).to(device)
+        data.targets_phi = torch.from_numpy(data.targets_phi).to(device)
+    return data
+
+def make_loaders(data):
+    """Generate train/val loaders for amplitude & phase."""
+    X = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total,7)
+    A = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total,1)
+    phi = torch.from_numpy(data.targets_phi).to(DEVICE)  # (N_total,1)
+
+    bytes_X   = sizeof_tensor(X)
+    bytes_A   = sizeof_tensor(A)
+    bytes_phi = sizeof_tensor(phi)
+    logger.info(f" -> GPU tensors allocated:"
+                f"  X={bytes_X/1024**2:.1f} MB,"
+                f"  A={bytes_A/1024**2:.1f} MB,"
+                f"  phi={bytes_phi/1024**2:.1f} MB")
+
+    if torch.cuda.is_available():
+        used = torch.cuda.memory_allocated(DEVICE)
+        reserved = torch.cuda.memory_reserved(DEVICE)
+        BS = pick_batch_size(X, A, phi, safety=0.1, max_cap=8192)
+        logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
+                    f" reserved={reserved/1024**3:.3f} GB,"
+                    f" using BS={BS}")
+    else:
+        BS = 64
+        logger.info(f"Using default batch size of {BS} for cpu...")
+
+    idx = list(range(X.size(0)))
+    train_idx, val_idx = train_test_split(
+        idx, test_size=VAL_SPLIT,
+        random_state=RANDOM_SEED, shuffle=True
+    )
+
+    train_ds_amp = TensorDataset(X[train_idx], A[train_idx])
+    val_ds_amp   = TensorDataset(X[val_idx],   A[val_idx])
+    train_ds_phi = TensorDataset(X[train_idx], phi[train_idx])
+    val_ds_phi   = TensorDataset(X[val_idx],   phi[val_idx])
+    train_ds_joint = TensorDataset(X[train_idx], A[train_idx], phi[train_idx])
+    val_ds_joint   = TensorDataset(X[val_idx],   A[val_idx], phi[val_idx])
+
+    loaders = {
+        'amp': {
+            'train': DataLoader(train_ds_amp,   batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_amp,     batch_size=BS, shuffle=False)
+        },
+        'phase': {
+            'train': DataLoader(train_ds_phi,   batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_phi,     batch_size=BS, shuffle=False)
+        },
+        'joint': {
+            'train': DataLoader(train_ds_joint, batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_joint,   batch_size=BS, shuffle=False)
+        }
+    }
+    return loaders
+

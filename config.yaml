@@ -4,14 +4,14 @@ pycbc:
     delta_t:         1024
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 512
+    waveform_length: 1024
 
   phenomd:
     waveform_name:   "IMRPhenomD"
     delta_t:         1024
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 2048
+    waveform_length: 1024
 
 model:
   amp_emb_hidden: [64,64]
@@ -36,7 +36,7 @@ sampling_ranges:
 
 training:
   # Data & splitting
-  num_samples:    10
+  num_samples:    10000
   val_split:      0.3
   random_seed:    42
 

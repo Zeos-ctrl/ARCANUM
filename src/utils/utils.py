@@ -6,6 +6,7 @@ import requests
 import numpy as np
 import torch.nn as nn
 from dataclasses import dataclass
+from torch.utils.data import DataLoader, TensorDataset
 
 from src.models.model_factory import make_amp_model, make_phase_model
 from src.data.config import *
@@ -79,6 +80,60 @@ def notify_discord(message: str, url: str = None):
         logger.info("Sent Discord notification.")
     except Exception as e:
         logger.error("Failed to send Discord notification: %s", e)
+
+def compute_last_layer_hessian_diag(
+    model: nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    noise_var: float = 1.0
+):
+    """
+    Approximate the diagonal of the Hessian of MSELoss wrt the final Linear layer’s
+    weights and bias, using a forward‐hook to capture the penultimate features phi.
+    Returns:
+      weight_variances: Tensor of shape (1, in_features)
+      bias_variance:    Tensor scalar shape (1,)
+    """
+    linears = [
+        m for m in model.modules()
+        if isinstance(m, nn.Linear) and m.out_features == 1
+    ]
+    assert linears, "No final Linear layer with out_features=1 found!"
+    final_linear = linears[-1]
+
+    # prepare accumulators
+    W = final_linear.weight
+    B = final_linear.bias
+    H_w = torch.zeros_like(W, device=device)
+    H_b = torch.zeros_like(B, device=device)
+
+    # hook to grab the input features phi whenever final_linear runs
+    captured = {"phi": None}
+    def hook_fn(module, inputs, output):
+        captured["phi"] = inputs[0].detach()
+
+    hook = final_linear.register_forward_hook(hook_fn)
+
+    # sweep once over the loader
+    model.eval()
+    with torch.no_grad():
+        for batch in loader:
+            X, Y = batch[0].to(device), batch[1].to(device)
+            _ = model(X[:, :1], X[:, 1:])
+
+            phi = captured["phi"]
+            B_size = phi.shape[0]
+
+            H_w += (phi ** 2).sum(dim=0, keepdim=True) / noise_var
+            H_b += torch.ones_like(B) * (B_size / noise_var)
+
+    hook.remove()
+
+    weight_variances = 1.0 / H_w
+    bias_variance    = 1.0 / H_b
+
+    return weight_variances, bias_variance
+
 
 def compute_match(h_true, h_pred):
     ht = h_true - h_true.mean()
