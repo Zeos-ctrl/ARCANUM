@@ -197,3 +197,4 @@ cython_debug/
 logs/*
 plots/*
 checkpoints/*
+*.pt

@@ -8,6 +8,7 @@ from scipy.signal import hilbert
 from dataclasses import dataclass
 from scipy.signal.windows import tukey
 from scipy.fft import fft, ifft
+from scipy.interpolate import interp1d
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
 
@@ -75,9 +76,31 @@ def sample_parameters(n, seed=None, method="lhs"):
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 
+def _resample_and_fill(h: np.ndarray, target_len: int) -> np.ndarray:
+    """
+    Trim leading/trailing zeros from h, then interpolate the 
+    non-zero segment uniformly back to length `target_len`.
+    """
+    # find non-zero region
+    nz = np.where(h != 0)[0]
+    if nz.size == 0:
+        # all zeros? just return zeros
+        return np.zeros(target_len, dtype=h.dtype)
+
+    start, end = nz[0], nz[-1]
+    segment = h[start:end+1]
+
+    # build old & new sample grids
+    old_x = np.linspace(0, 1, len(segment))
+    new_x = np.linspace(0, 1, target_len)
+
+    # linear interpolation (extrapolate just in case)
+    f = interp1d(old_x, segment, kind='linear', fill_value='extrapolate')
+    return f(new_x)
+
+
 def make_waveform(theta):
-    """Generate a clean (noise-free) waveform for parameters theta."""
-    logger.debug(f"Generating clean waveform with theta={theta}")
+    """Generate a *clean* waveform of exactly WAVEFORM_LENGTH samples."""
     m1, m2, chi1z, chi2z, incl, ecc = theta
     hp, _ = get_td_waveform(
         mass1=m1, mass2=m2,
@@ -87,40 +110,45 @@ def make_waveform(theta):
         approximant=WAVEFORM
     )
     h_plus = hp.numpy()
-    L = len(h_plus)
-    if L >= WAVEFORM_LENGTH:
-        return h_plus[-WAVEFORM_LENGTH:]
-    else:
-        pad_amt = WAVEFORM_LENGTH - L
-        return np.pad(h_plus, (pad_amt, 0), mode="constant")
+
+    # now trim & resample onto the full window
+    return _resample_and_fill(h_plus, WAVEFORM_LENGTH)
+
 
 def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     """
-    Generate a noisy waveform at (approximate) SNR=snr_target,
-    but ensure we always use WAVEFORM_LENGTH samples.
+    Generate a noisy waveform of exactly WAVEFORM_LENGTH samples,
+    trimmed & resampled to eliminate zero padding artifacts.
     """
-    # get exactly WAVEFORM_LENGTH data via your helper
-    h_clean = make_waveform(theta)  # now shape == (WAVEFORM_LENGTH,)
+    # 1) raw clean waveform (un‐padded)
+    m1, m2, chi1z, chi2z, incl, ecc = theta
+    hp, _ = get_td_waveform(
+        mass1=m1, mass2=m2,
+        spin1z=chi1z, spin2z=chi2z,
+        inclination=incl, eccentricity=ecc,
+        delta_t=DELTA_T, f_lower=F_LOWER,
+        approximant=WAVEFORM
+    )
+    h_clean = hp.numpy()
 
-    # manual whiten in freq domain
-    Hf = fft(h_clean)
+    # 2) whiten & scale to target SNR  
+    Hf      = fft(h_clean)
     sqrt_psd = np.sqrt(psd_arr) + 1e-30
     Hf_white = Hf / sqrt_psd
     h_white  = np.real(ifft(Hf_white))
 
-    # compute native whitened -> SNR
     rho_clean = np.sqrt(np.sum(h_white**2) * DELTA_T)
-    scale     = (snr_target/rho_clean) if rho_clean>0 else 1.0
+    scale     = (snr_target / rho_clean) if rho_clean > 0 else 1.0
+    h_scaled  = h_clean * scale
 
-    # scale the **clean** fixed‑length waveform
-    h_scaled = h_clean * scale
-
-    # add PSD‐matched noise
+    # 3) add noise
     noise_td = noise.noise_from_psd(
-        WAVEFORM_LENGTH, DELTA_T, psd_arr, seed=seed
+        len(h_scaled), DELTA_T, psd_arr, seed=seed
     ).numpy()
+    h_noisy = h_scaled + noise_td
 
-    return h_scaled + noise_td
+    # 4) trim & resample
+    return _resample_and_fill(h_noisy, WAVEFORM_LENGTH)
 
 def generate_data(
     clean: bool = CLEAN,
@@ -240,7 +268,7 @@ def generate_data(
 
     return dataset
 
-def pick_batch_size(X, A, phi, safety=0.9, max_cap=None):
+def pick_batch_size(X, A, phi, safety=0.1, max_cap=None):
     """Return the largest batch size that fits in (safety * free GPU mem)."""
     # per‐sample byte footprint
     N = X.size(0)
@@ -296,7 +324,7 @@ def make_loaders(data):
     if torch.cuda.is_available():
         used = torch.cuda.memory_allocated(DEVICE)
         reserved = torch.cuda.memory_reserved(DEVICE)
-        BS = pick_batch_size(X, A, phi, safety=0.1, max_cap=8192)
+        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=2046)
         logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
                     f" reserved={reserved/1024**3:.3f} GB,"
                     f" using BS={BS}")

@@ -36,7 +36,7 @@ sampling_ranges:
 
 training:
   # Data & splitting
-  num_samples:    10000
+  num_samples:    1000
   val_split:      0.3
   random_seed:    42
 
