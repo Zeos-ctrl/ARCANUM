@@ -25,7 +25,7 @@ logger = logging.getLogger(__name__)
 DATA_PATH = 'dataset.pt'
 
 def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS,
-                   match_weight: float = 0.1):
+                   match_weight: float = 0.5):
     """
     Train the amplitude network with a composite loss:
       loss = MSE + match_weight * (1 - batch_correlation)
@@ -46,103 +46,55 @@ def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPO
     best_val = float('inf')
     best_state = None
     wait = 0
+    criterion = nn.MSELoss()
 
     for epoch in range(1, max_epochs + 1):
-        # ----- TRAINING -----
+        # Train
         amp_model.train()
-        total_train_loss = 0.0
-        total_samples = 0
-
-        for X, A in tqdm(loaders['amp']['train'],
-                         desc=f"E{epoch} AMP Train",
-                         leave=False):
+        train_loss = 0.0; cnt = 0
+        for X, A in tqdm(loaders['amp']['train'], desc=f"E{epoch} AMP Train", leave=False):
             X, A = X.to(DEVICE), A.to(DEVICE)
-            t_norm, theta = X[:, :1], X[:, 1:]
+            t_norm, theta = X[:,:1], X[:,1:]
             A_pred = amp_model(t_norm, theta)
-
-            # Mean squared error
-            mse = F.mse_loss(A_pred, A, reduction='mean')
-
-            # Compute batch correlation
-            # subtract batch means
-            A_true_centered = A - A.mean(dim=0, keepdim=True)
-            A_pred_centered = A_pred - A_pred.mean(dim=0, keepdim=True)
-            # compute std dev, add small epsilon for stability
-            std_true = A_true_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
-            std_pred = A_pred_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
-            # normalized vectors
-            y_norm = A_true_centered / std_true
-            yhat_norm = A_pred_centered / std_pred
-            # correlation is average of elementwise product
-            corr = (y_norm * yhat_norm).mean()
-            match_loss = 1.0 - corr
-
-            # total loss
-            loss = mse + match_weight * match_loss
-
-            optimizer.zero_grad()
-            loss.backward()
-            nn.utils.clip_grad_norm_(amp_model.parameters(),
-                                     GRADIENT_CLIP)
+            loss = criterion(A_pred, A)
+            optimizer.zero_grad(); loss.backward()
+            nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
             optimizer.step()
-
             bs = X.size(0)
-            total_train_loss += loss.item() * bs
-            total_samples += bs
+            train_loss += loss.item()*bs; cnt += bs
+        train_loss /= cnt
 
-        avg_train_loss = total_train_loss / total_samples
-
-        # ----- VALIDATION -----
+        # Validate
         amp_model.eval()
-        total_val_loss = 0.0
-        total_val_samples = 0
-
+        val_loss = 0.0; cnt = 0
         with torch.no_grad():
             for X, A in loaders['amp']['val']:
                 X, A = X.to(DEVICE), A.to(DEVICE)
-                t_norm, theta = X[:, :1], X[:, 1:]
-                A_pred = amp_model(t_norm, theta)
-
-                mse = F.mse_loss(A_pred, A, reduction='mean')
-                A_true_centered = A - A.mean(dim=0, keepdim=True)
-                A_pred_centered = A_pred - A_pred.mean(dim=0, keepdim=True)
-                std_true = A_true_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
-                std_pred = A_pred_centered.std(dim=0, unbiased=False, keepdim=True) + 1e-6
-                y_norm = A_true_centered / std_true
-                yhat_norm = A_pred_centered / std_pred
-                corr = (y_norm * yhat_norm).mean()
-                match_loss = 1.0 - corr
-
-                loss = mse + match_weight * match_loss
-
+                t_norm, theta = X[:,:1], X[:,1:]
+                loss = criterion(amp_model(t_norm, theta), A)
                 bs = X.size(0)
-                total_val_loss += loss.item() * bs
-                total_val_samples += bs
+                val_loss += loss.item()*bs; cnt += bs
+        val_loss /= cnt
+        scheduler.step(val_loss)
 
-        avg_val_loss = total_val_loss / total_val_samples
-        scheduler.step(avg_val_loss)
-
-        if avg_val_loss < best_val - MIN_DELTA:
-            best_val = avg_val_loss
-            wait = 0
+        # Checkpoint / early stop
+        if val_loss < best_val - MIN_DELTA:
+            best_val = val_loss; wait = 0
             best_state = amp_model.state_dict()
-            torch.save(best_state,
-                       os.path.join(checkpoint_dir, "amp_best.pt"))
-            logger.info(f"Epoch {epoch}: AMP val improved to {avg_val_loss:.3e}")
+            torch.save(best_state, os.path.join(checkpoint_dir, "amp_best.pt"))
+            logger.info(f"Epoch {epoch}: AMP val improved to {val_loss:.3e}")
         else:
             wait += 1
             if wait >= PATIENCE:
                 logger.info(f"AMP early stopping at epoch {epoch}")
                 break
 
-        tqdm.write(f"AMP Epoch {epoch} | Train Loss={avg_train_loss:.3e} "
-                   f"| Val Loss={avg_val_loss:.3e} | Corr={corr:.3f}")
+        tqdm.write(f"AMP Epoch {epoch} | Train={train_loss:.3e} | Val={val_loss:.3e}")
 
     # Restore best
-    if best_state is not None:
+    if best_state:
         amp_model.load_state_dict(best_state)
-        logger.info("Restored AMP best model with match loss")
-
+        logger.info("Restored AMP best model")
     return amp_model
 
 def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):

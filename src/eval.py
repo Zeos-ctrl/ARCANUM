@@ -172,7 +172,7 @@ def cross_correlation_fixed_q(
     os.makedirs(plot_dir, exist_ok=True)
 
     # Load data and predictor
-    data = generate_data()
+    data = generate_data(samples=10)
     pred = WaveformPredictor("checkpoints", device=DEVICE)
 
     qs, sym_masses, matches = [], [], []
@@ -246,7 +246,6 @@ def cross_correlation_fixed_q(
         ax = axs[row, 2]
         ax.plot(t_norm, phi_true, label="True Phase", linewidth=1)
         ax.plot(t_norm, phi_pred, '--', label="Pred Phase", linewidth=1)
-        ax.set_yscale("log")
         if row == 0:
             ax.set_title("Phase")
         ax.legend(loc="upper left")
@@ -404,7 +403,7 @@ if __name__ == "__main__":
     logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 
     evaluate()
-#    matches = cross_correlation_fixed_q()
+    matches = cross_correlation_fixed_q()
     polar()
 
 #    notify_discord(
