@@ -94,9 +94,9 @@ CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]
 
 # Inputs to train the network, comment out to disable
 TRAIN_FEATURES = [
-#    "chirp_mass",
+    "chirp_mass",
     "symmetric_mass_ratio",
-    "effective_spin",
+#    "effective_spin",
 #    "inclination",
-    "eccentricity",
+#    "eccentricity",
 ]

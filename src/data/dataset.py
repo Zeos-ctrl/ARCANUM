@@ -44,23 +44,29 @@ def sizeof_numpy_array(arr):
 def sizeof_tensor(t):
     return t.element_size() * t.nelement()
 
-def sample_parameters(n, seed=None, method="lhs"):
+def sample_parameters(n, seed=None, method="lhs", gaussian_std_factor=4.0):
     """
-    Sample n parameter sets from either Latin Hypercube Sampling (default) or uniform random sampling.
+    Sample n parameter sets using one of three methods: Latin Hypercube Sampling (LHS), uniform random, or Gaussian.
 
     Args:
         n (int): Number of samples.
         seed (int or None): Random seed for reproducibility.
-        method (str): Sampling method, either "lhs" (default) or "uniform".
+        method (str): Sampling method, one of:
+            - "lhs": Latin Hypercube Sampling
+            - "uniform": Uniform random sampling
+            - "gaussian": Gaussian sampling
+        gaussian_std_factor (float): Factor to divide the parameter range by to get the Gaussian std.
+            std = (high - low) / gaussian_std_factor
 
     Returns:
         np.ndarray: Sampled parameters, shape (n, 6)
     """
     logger.debug(f"Sampling {n} parameter sets using {method} method...")
 
+    # Define bounds for each parameter
     lows  = np.array([MASS_MIN, MASS_MIN, SPIN_MIN, SPIN_MIN, INCLINATION_MIN, ECC_MIN])
     highs = np.array([MASS_MAX, MASS_MAX, SPIN_MAX, SPIN_MAX, INCLINATION_MAX, ECC_MAX])
-    dim   = 6
+    dim   = lows.size
 
     rng = np.random.default_rng(seed)
 
@@ -68,8 +74,17 @@ def sample_parameters(n, seed=None, method="lhs"):
         sampler = qmc.LatinHypercube(d=dim, seed=seed)
         sample = sampler.random(n)
         samples = qmc.scale(sample, lows, highs)
+
     elif method == "uniform":
         samples = rng.uniform(lows, highs, size=(n, dim))
+
+    elif method == "gaussian":
+        means = (lows + highs) / 2.0
+        stds  = (highs - lows) / gaussian_std_factor
+
+        raw = rng.normal(loc=means, scale=stds, size=(n, dim))
+        samples = np.clip(raw, lows, highs)
+
     else:
         raise ValueError(f"Unknown sampling method: {method}")
 
@@ -324,7 +339,7 @@ def make_loaders(data):
     if torch.cuda.is_available():
         used = torch.cuda.memory_allocated(DEVICE)
         reserved = torch.cuda.memory_reserved(DEVICE)
-        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=2046)
+        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=4096)
         logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
                     f" reserved={reserved/1024**3:.3f} GB,"
                     f" using BS={BS}")
