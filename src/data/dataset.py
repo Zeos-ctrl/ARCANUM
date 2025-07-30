@@ -30,8 +30,7 @@ class GeneratedDataset:
     targets_phi: np.ndarray   # (N_total, 1)
     time_unscaled: np.ndarray # (L,)
     thetas: np.ndarray        # raw thetas (N,6), for reference
-    log_amp_min: float
-    log_amp_max: float
+    amp_scale: float          # scalar for amplitude
     phi_unwrap: np.ndarray    # (N,L)
     param_means: np.ndarray   # (5,)
     param_stds: np.ndarray    # (5,)
@@ -165,6 +164,29 @@ def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     # 4) trim & resample
     return _resample_and_fill(h_noisy, WAVEFORM_LENGTH)
 
+def compute_global_scale(inst_target: np.ndarray, target_peak: float = 1.0) -> float:
+    """
+    Given a 2D array of instantaneous targets (shape [N_samples, L]),
+    compute a single scale factor so that the largest absolute value
+    across the entire set becomes `target_peak`.
+    """
+    max_peak = np.max(inst_target)
+    return max_peak / target_peak
+
+
+def scale_target(inst_target: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Divide all instantaneous targets by `scale`.
+    """
+    return inst_target / scale
+
+
+def unscale_target(scaled_target: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Recover original targets by multiplying by `scale`.
+    """
+    return scaled_target * scale
+
 def generate_data(
     clean: bool = CLEAN,
     samples: int = NUM_SAMPLES,
@@ -200,7 +222,7 @@ def generate_data(
     delta_f = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
     psd_arr = aLIGOZeroDetHighPower(WAVEFORM_LENGTH, delta_f, F_LOWER)
 
-    all_log_amp    = np.zeros((samples, WAVEFORM_LENGTH))
+    all_amp    = np.zeros((samples, WAVEFORM_LENGTH))
     all_phi_unwrap = np.zeros((samples, WAVEFORM_LENGTH))
     eps = 1e-30
 
@@ -225,13 +247,12 @@ def generate_data(
         # analytic → inst amp & phase
         analytic     = hilbert(hp_seg)
         inst_amp     = np.abs(analytic) + eps
-        all_log_amp[i]    = np.log10(inst_amp)
+        all_amp[i]    = inst_amp
         all_phi_unwrap[i] = np.unwrap(np.angle(analytic))
 
     # normalize amp -> [0,1]
-    log_amp_min = all_log_amp.min()
-    log_amp_max = all_log_amp.max()
-    all_log_amp_norm = (all_log_amp - log_amp_min)/(log_amp_max-log_amp_min)
+    scale = compute_global_scale(all_amp, target_peak=1.0)
+    all_amp_scaled = scale_target(all_amp, scale)
 
     # time grids
     time_unscaled = np.linspace(-WAVEFORM_LENGTH*DELTA_T, 0.0, WAVEFORM_LENGTH)
@@ -247,7 +268,7 @@ def generate_data(
     theta_grid = np.broadcast_to(theta_norm[:,None,:], (samples, WAVEFORM_LENGTH, D))
     inputs     = np.concatenate([t_grid[...,None], theta_grid], axis=-1).reshape(-1,1+D)
 
-    targets_A   = all_log_amp_norm.reshape(-1,1)
+    targets_A   = all_amp_scaled.reshape(-1,1)
     targets_phi = all_phi_unwrap.reshape(-1,1)
 
     dataset = GeneratedDataset(
@@ -256,8 +277,7 @@ def generate_data(
         targets_phi=targets_phi.astype(np.float32),
         time_unscaled=time_unscaled,
         thetas=thetas,
-        log_amp_min=log_amp_min,
-        log_amp_max=log_amp_max,
+        amp_scale=scale,
         phi_unwrap=all_phi_unwrap,
         param_means=param_means,
         param_stds=param_stds,
@@ -339,7 +359,7 @@ def make_loaders(data):
     if torch.cuda.is_available():
         used = torch.cuda.memory_allocated(DEVICE)
         reserved = torch.cuda.memory_reserved(DEVICE)
-        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=4096)
+        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=BATCH_SIZE)
         logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
                     f" reserved={reserved/1024**3:.3f} GB,"
                     f" using BS={BS}")

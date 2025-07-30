@@ -13,6 +13,7 @@ from pycbc.waveform import get_td_waveform
 from src.data.config import *
 from src.data.dataset import generate_data
 from src.utils.utils import compute_match, WaveformPredictor, notify_discord
+from src.data.dataset import unscale_target
 
 logger = logging.getLogger(__name__)
 
@@ -48,7 +49,7 @@ def evaluate():
     L = len(time)
     amp_true_norm = data.targets_A.reshape(10, L)[i]
     phi_true      = data.targets_phi.reshape(10, L)[i]
-    amp_true      = pred.inverse_log_norm(amp_true_norm)
+    amp_true      = unscale_target(amp_true_norm, pred.amp_scale)
     h_true        = amp_true * np.cos(phi_true)
 
     # model prediction
@@ -151,126 +152,155 @@ def evaluate():
         output_path="plots/prediction_uncertainty.png"
     )
 
+def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
+    """
+    Generate 'samples' waveforms, predict them, compute per-pair cross-correlation (true[i] vs pred[i]),
+    and plot:
+      - Grid comparison (strain, amplitude, phase) for best and worst matching pairs
+      - Scatter of match vs mass ratio q
+      - 3D scatter of (m1, m2, match)
 
-def cross_correlation_fixed_q(
-    q_list=(1.0, 1.5, 2.0, 2.5),
-    chi1z=0.0, chi2z=0.0,
-    incl=0.0, ecc=0.0
-):
-    """
-    For each mass ratio q in q_list:
-      - Select waveform from dataset closest to q
-      - Compute true and predicted strains
-      - Compute match (cross-correlation statistic)
-      - Plot waveform grid (strain, amplitude, phase)
-      - Plot symmetric mass ratio vs match
+    Saves plots in 'plots/cross_correlation_pairs'.
     Returns:
-      matches: list of match values per q
+      matches: np.ndarray of shape (samples,) with match values for each pair.
     """
-    logger.info("Running waveform cross-correlation vs mass ratio q.")
+    # Prepare output directory
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
 
-    # Load data and predictor
-    data = generate_data(samples=10)
-    pred = WaveformPredictor("checkpoints", device=DEVICE)
+    # Load data and model
+    data = generate_data(samples=samples)
+    pred = WaveformPredictor(checkpoint_dir, device=device)
 
-    qs, sym_masses, matches = [], [], []
-    h_trues, h_preds, t_norms = [], [], []
+    thetas = data.thetas
     L = data.time_unscaled.size
 
-    # Precompute mass ratios and total masses
-    thetas = data.thetas
-    mass_ratios = thetas[:,1] / thetas[:,0]  # m2/m1
-    total_masses = thetas[:,0] + thetas[:,1]  # m1 + m2
-    sym_ratio = (thetas[:,0] * thetas[:,1]) / (total_masses**2)  # symmetric mass ratio η
+    # Containers
+    h_trues, h_preds, t_norms = [], [], []
+    qs, m1s, m2s = [], [] ,[]
+    matches = np.zeros(samples)
 
-    for q in q_list:
-        # Find index closest to desired q
-        idx = np.argmin(np.abs(mass_ratios - q))
+    # Generate, predict and match each sample
+    for idx in range(samples):
         m1, m2, c1z, c2z, incl_i, ecc_i = thetas[idx]
-
-        # True waveform reconstruction
-        amp_true_norm = data.targets_A.reshape(-1, L)[idx]
-        phi_true_arr   = data.targets_phi.reshape(-1, L)[idx]
-        log_rec        = amp_true_norm * (data.log_amp_max - data.log_amp_min) + data.log_amp_min
-        amp_true       = 10**log_rec
-        h_true         = amp_true * np.cos(phi_true_arr)
-
-        # Model prediction
+        # True waveform
+        amp_norm = data.targets_A.reshape(-1, L)[idx]
+        phi_arr  = data.targets_phi.reshape(-1, L)[idx]
+        amp_true = unscale_target(amp_norm, pred.amp_scale)
+        h_true   = amp_true * np.cos(phi_arr)
+        # Prediction
         t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl_i, ecc_i)
         h_pred = amp_pred * np.cos(phi_pred)
 
-        # Compute match (normalized cross-correlation)
-        match, _ = compute_match(h_true, h_pred)
+        # Compute match
+        match_val, _ = compute_match(h_true, h_pred)
 
-        # Record
-        qs.append(q)
-        matches.append(match)
-        sym_masses.append((m1 * m2) / ((m1 + m2)**2))
+        # Store
         h_trues.append(h_true)
         h_preds.append(h_pred)
         t_norms.append(t_norm)
+        matches[idx] = match_val
+        m1s.append(m1)
+        m2s.append(m2)
+        qs.append(m2/m1)
 
-    # Plot waveform grid: strain, amplitude, phase
-    K = len(q_list)
-    fig, axs = plt.subplots(K, 3, figsize=(18, 4*K), sharex=True)
-    for row, (q, h_true, h_pred, t_norm) in enumerate(zip(qs, h_trues, h_preds, t_norms)):
-        # Analytic signals
-        analytic_true = hilbert(h_true)
-        A_true = np.abs(analytic_true)
-        phi_true = np.unwrap(np.angle(analytic_true))
+    best_idx = np.argmax(matches)
+    worst_idx = np.argmin(matches)
 
-        analytic_pred = hilbert(h_pred)
-        A_pred = np.abs(analytic_pred)
-        phi_pred = np.unwrap(np.angle(analytic_pred))
+    def plot_comparison(idx, title, fname):
+        # Compute analytic signals
+        h_t, h_p, t = h_trues[idx], h_preds[idx], t_norms[idx]
+        an_t = hilbert(h_t); A_t = np.abs(an_t); ph_t = np.unwrap(np.angle(an_t))
+        an_p = hilbert(h_p); A_p = np.abs(an_p); ph_p = np.unwrap(np.angle(an_p))
+        # Differences
+        dh = h_p - h_t
+        dA = A_p - A_t
+        dph = ph_p - ph_t
 
+        fig, axs = plt.subplots(2, 2, figsize=(18, 10))
         # Strain
-        ax = axs[row, 0]
-        ax.plot(t_norm, h_true, label="True", linewidth=1)
-        ax.plot(t_norm, h_pred, '--', label="Predicted", linewidth=1)
-        if row == 0:
-            ax.set_title("Strain")
-        ax.set_ylabel(f"q={q:.1f}")
-        ax.legend(loc="upper left")
-
+        ax = axs[0, 0]
+        ax.plot(t, h_t, label='True', linewidth=1)
+        ax.plot(t, h_p, '--', label='Predicted', linewidth=1)
+        ax.set_title('Strain Comparison')
+        ax.set_ylabel('Strain')
+        ax.grid(True)
+        ax.legend()
         # Amplitude
-        ax = axs[row, 1]
-        ax.plot(t_norm, A_true, label="True Amp", linewidth=1)
-        ax.plot(t_norm, A_pred, '--', label="Pred Amp", linewidth=1)
-        if row == 0:
-            ax.set_title("Amplitude")
-        ax.legend(loc="upper left")
-
+        ax = axs[0, 1]
+        ax.plot(t, A_t, label='True Amp', linewidth=1)
+        ax.plot(t, A_p, '--', label='Pred Amp', linewidth=1)
+        ax.set_title('Amplitude Comparison')
+        ax.set_ylabel('Amplitude')
+        ax.grid(True)
+        ax.legend()
         # Phase
-        ax = axs[row, 2]
-        ax.plot(t_norm, phi_true, label="True Phase", linewidth=1)
-        ax.plot(t_norm, phi_pred, '--', label="Pred Phase", linewidth=1)
-        if row == 0:
-            ax.set_title("Phase")
-        ax.legend(loc="upper left")
+        ax = axs[1, 0]
+        ax.plot(t, ph_t, label='True Phase', linewidth=1)
+        ax.plot(t, ph_p, '--', label='Pred Phase', linewidth=1)
+        ax.set_title('Phase Comparison')
+        ax.set_xlabel('Normalized Time')
+        ax.set_ylabel('Phase (rad)')
+        ax.grid(True)
+        ax.legend()
+        # Difference
+        ax = axs[1, 1]
+        ax.plot(t, dh, label='d Strain', linewidth=1)
+        ax.plot(t, dA, label='d Amplitude', linestyle='--', linewidth=1)
+        ax.plot(t, dph, label='d Phase', linestyle=':', linewidth=1)
+        ax.set_title('Differences')
+        ax.set_xlabel('Normalized Time')
+        ax.set_ylabel('Difference')
+        ax.grid(True)
+        ax.legend(loc='upper right', fontsize='small')
 
-    for ax in axs[-1, :]:
-        ax.set_xlabel("Normalized time")
+        fig.suptitle(f"{title} (idx={idx}, match={matches[idx]:.4f})", fontsize=16)
+        plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+        plt.savefig(os.path.join(plot_dir, fname), dpi=200)
+        plt.close()
 
-    plt.tight_layout()
-    grid_path = os.path.join(plot_dir, "waveform_grid_fixed_q.png")
-    plt.savefig(grid_path)
-    plt.close()
-    logger.info("Saved waveform grid to %s", grid_path)
+    # Best and worst overlays
+    plot_comparison(best_idx, "Best match", "best_match_comparison.png")
+    plot_comparison(worst_idx, "Worst match", "worst_match_comparison.png")
 
-    # Plot symmetric mass ratio vs match
-    plt.figure(figsize=(8, 5))
-    plt.scatter(sym_masses, matches)
-    plt.xlabel(r"Symmetric mass ratio $\eta = m_1 m_2/(m_1 + m_2)^2$")
-    plt.ylabel("Match")
-    plt.title("Match vs Symmetric Mass Ratio")
+    # Scatter match vs q
+    plt.figure(figsize=(16, 8), dpi=150)
+    plt.scatter(qs, matches, c=matches, cmap='viridis', s=80)
+    plt.xlabel('Mass ratio q = m2/m1')
+    plt.ylabel('Match')
+    plt.title('Match vs Mass Ratio')
     plt.grid(True)
     plt.tight_layout()
-    scatter_path = os.path.join(plot_dir, "match_vs_symmetric_mass.png")
-    plt.savefig(scatter_path)
+    plt.savefig(os.path.join(plot_dir, "match_vs_q.png"), dpi=150)
     plt.close()
-    logger.info("Saved symmetric mass vs match plot to %s", scatter_path)
+
+    from scipy.interpolate import griddata
+
+    m1_grid = np.linspace(min(m1s), max(m1s), num=100)
+    m2_grid = np.linspace(min(m2s), max(m2s), num=100)
+    m1_grid, m2_grid = np.meshgrid(m1_grid, m2_grid)
+
+    match_grid = griddata(
+        (m1s, m2s), matches, (m1_grid, m2_grid), method='linear'
+    )
+
+    fig = plt.figure(figsize=(12, 8))
+    ax = fig.add_subplot(111, projection='3d')
+
+    surf = ax.plot_surface(
+        m1_grid, m2_grid, match_grid, cmap='viridis', edgecolor='none'
+    )
+
+    ax.set_xlabel('Mass m1')
+    ax.set_ylabel('Mass m2')
+    ax.set_zlabel('Match')
+    ax.set_title('3D Surface: Masses vs Match')
+
+    fig.colorbar(surf, shrink=0.5, aspect=5)
+
+    plt.tight_layout()
+    plt.savefig(os.path.join(plot_dir, "3d_match_surface.png"), dpi=150)
+    plt.close()
 
     return matches
 
@@ -403,7 +433,7 @@ if __name__ == "__main__":
     logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 
     evaluate()
-    matches = cross_correlation_fixed_q()
+    matches = cross_correlation()
     polar()
 
 #    notify_discord(
