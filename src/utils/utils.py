@@ -10,6 +10,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from src.models.model_factory import make_amp_model, make_phase_model
 from src.data.config import *
+from src.data.dataset import unscale_target
 
 logger = logging.getLogger(__name__)
 
@@ -55,8 +56,7 @@ def save_checkpoint(checkpoint_dir, amp_model, phase_model, data,
     meta = {
         "waveform_length":   WAVEFORM_LENGTH,
         "delta_t":           DELTA_T,
-        "log_amp_min":       float(data.log_amp_min),
-        "log_amp_max":       float(data.log_amp_max),
+        "amp_scale":       float(data.amp_scale),
         "train_samples":     NUM_SAMPLES,
         "hessian_noise_var": noise_variance
     }
@@ -177,8 +177,7 @@ class WaveformPredictor:
             raise FileNotFoundError(f"No meta.json in {checkpoint_dir}")
         with open(meta_path) as fp:
             meta = json.load(fp)
-        self.log_amp_min     = meta["log_amp_min"]
-        self.log_amp_max     = meta["log_amp_max"]
+        self.amp_scale     = meta["amp_scale"]
         self.waveform_length = meta["waveform_length"]
         self.delta_t         = meta["delta_t"]
         self.train_samples   = int(meta.get("train_samples", 0))
@@ -229,11 +228,6 @@ class WaveformPredictor:
     def _normalize_derived(self, derived):
         return (derived - self.param_means) / self.param_stds
 
-    def inverse_log_norm(self, y_norm: np.ndarray) -> np.ndarray:
-        """Denormalize log10 amplitude and return linear amplitude."""
-        y = y_norm * (self.log_amp_max - self.log_amp_min) + self.log_amp_min
-        return 10 ** y
-
     def predict(
         self,
         m1: float,
@@ -277,7 +271,7 @@ class WaveformPredictor:
             phi    = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().ravel()
 
         # Invert amp‐norm and build polarizations
-        amp    = self.inverse_log_norm(A_norm)
+        amp    = unscale_target(A_norm, self.amp_scale)
         cosi   = np.cos(inclination)
         h_plus  = amp * ((1 + cosi**2)/2) * np.cos(phi)
         h_cross = amp * ( cosi ) * np.sin(phi)
@@ -360,7 +354,7 @@ class WaveformPredictor:
         incls   = thetas_raw[:, 3]
         cosi    = np.cos(incls)[:,None]
 
-        amp_mat = self.inverse_log_norm(Amp_mat)
+        amp_mat = unscale_target(Amp_mat, self.amp_scale)
         h_plus  = amp_mat * ((1+cosi**2)/2) * np.cos(phi_mat)
         h_cross = amp_mat * ( cosi ) * np.sin(phi_mat)
 
@@ -461,7 +455,7 @@ class WaveformPredictor:
         sigma_phase   = np.sqrt(var_phase.cpu().numpy().ravel())    * sigma_level
 
         # Invert log‑norm
-        linear_amp = self.inverse_log_norm(mu_log_amp_np)
+        linear_amp = unscale_target(mu_log_amp_np, self.amp_scale)
 
         # Analytic propagation
         cos_i = np.cos(inclination)
@@ -575,7 +569,7 @@ class WaveformPredictor:
             sigma_phase  = np.sqrt(var_phi.cpu().numpy().reshape(B, length))    * sigma_level
 
             # Invert log and propagate
-            linear_amp = self.inverse_log_norm(mu_logA_np)  # (B,L)
+            linear_amp = unscale_target(mu_logA_np, self.amp_scale)  # (B,L)
             cos_inc    = np.cos(block[:,4])[:,None]         # (B,1)
 
             plus_mean  = linear_amp * ((1+cos_inc**2)/2) * np.cos(mu_phase_np)
@@ -621,7 +615,7 @@ class WaveformPredictor:
         Like predict(), but returns the normalized log-amplitude and phase.
         Returns:
           time_seconds (L,),
-          amp_pred     (L,),  # in linear units after inverse_log_norm
+          amp_pred     (L,),  # in linear units after unscaling
           phi_pred     (L,)   # raw unwrapped radians
         """
         # time grid
@@ -659,7 +653,7 @@ class WaveformPredictor:
                                  .cpu().numpy().ravel()
 
         # inverse‐log‐norm to get linear amplitude
-        amp_pred = self.inverse_log_norm(log_amp_norm)
+        amp_pred = unscale_target(log_amp_norm, self.amp_scale)
 
         return t_real, amp_pred, phi_pred
 
@@ -718,7 +712,7 @@ class WaveformPredictor:
                 ph  = self.phase_model(inp_t[:,:1], inp_t[:,1:])\
                              .cpu().numpy().reshape(B, L)
 
-            all_amp.append(self.inverse_log_norm(A_n))
+            all_amp.append(unscale_target(A_n, self.amp_scale))
             all_phi.append(ph)
 
         amp_matrix = np.vstack(all_amp)  # (N,L)
