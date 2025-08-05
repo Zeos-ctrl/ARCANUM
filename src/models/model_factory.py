@@ -1,5 +1,5 @@
 import torch.nn as nn
-from src.data.config import MODEL_TYPE, AMP_EMB_HIDDEN, AMP_HIDDEN, AMP_BANKS, AMP_DROPOUT, PHASE_EMB_HIDDEN, PHASE_HIDDEN, PHASE_BANKS, PHASE_DROPOUT
+from src.data.config import *
 from src.models.mlp import AmplitudeDNN_Full, PhaseDNN_Full
 
 def make_amp_model(
@@ -14,7 +14,9 @@ def make_amp_model(
         return AmplitudeDNN_Full(
             in_param_dim=in_param_dim,
             time_dim=1,
-            emb_hidden=AMP_EMB_HIDDEN,
+            fourier_bands=AMP_FOURIER_BANDS,         # e.g. 16
+            fourier_max_freq=AMP_FOURIER_MAX_FREQ,   # e.g. 10.0
+            fourier_learnable=AMP_FOURIER_LEARNABLE, # True/False
             amp_hidden=AMP_HIDDEN,
             N_banks=AMP_BANKS,
             dropout=AMP_DROPOUT
@@ -35,7 +37,9 @@ def make_phase_model(
         return PhaseDNN_Full(
             param_dim=param_dim,
             time_dim=1,
-            emb_hidden=PHASE_EMB_HIDDEN,
+            fourier_bands=PHASE_FOURIER_BANDS,
+            fourier_max_freq=PHASE_FOURIER_MAX_FREQ,
+            fourier_learnable=PHASE_FOURIER_LEARNABLE,
             phase_hidden=PHASE_HIDDEN,
             N_banks=PHASE_BANKS,
             dropout=PHASE_DROPOUT

@@ -24,16 +24,8 @@ logger = logging.getLogger(__name__)
 
 DATA_PATH = 'dataset.pt'
 
-def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS,
-                   match_weight: float = 0.5):
-    """
-    Train the amplitude network with a composite loss:
-      loss = MSE + match_weight * (1 - batch_correlation)
-
-    batch_correlation = average over batch of
-      ( (A_true - mean) * (A_pred - mean) ) / (std_true * std_pred)
-    """
-    logger.info("Stage 1: training amplitude network with match loss")
+def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
+    logger.info("Stage 1: training amplitude network")
     optimizer = optim.Adam(amp_model.parameters(), lr=0.0004138040112561013)
     scheduler = ReduceLROnPlateau(
         optimizer,
@@ -96,6 +88,7 @@ def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPO
         amp_model.load_state_dict(best_state)
         logger.info("Restored AMP best model")
     return amp_model
+
 
 def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 2: training phase network only")

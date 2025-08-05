@@ -22,15 +22,23 @@ warnings.filterwarnings("ignore", module="pycbc")
 
 logger = logging.getLogger(__name__)
 
+import os
+import time
+import logging
+import numpy as np
+import plotly.graph_objects as go
+from scipy.stats import gaussian_kde
+
+logger = logging.getLogger(__name__)
+
 def benchmark(sample_counts, predictor: WaveformPredictor):
     """
     For each n in sample_counts:
       - Generate n waveforms via PyCBC's make_waveform (clean)
-      - Predict n waveforms via the DNN (batch_predict)
+      - Predict n waveforms via the DNN (single and batch)
       - Time both operations
       - Compute mean match between true & predicted strains
-      - Save both an interactive scatter plot of matches vs index and
-        a histogram with a smooth Gaussian KDE overlay of match distribution
+      - Save interactive scatter plot and histogram with KDE
     """
     results = {}
     logger.info("Starting benchmark over sample counts: %s", sample_counts)
@@ -44,17 +52,19 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         logger.debug("Sampled thetas shape: %s", thetas.shape)
 
         # PyCBC generation
-        logger.debug("Starting PyCBC waveform generation for n=%d", n)
         t0 = time.perf_counter()
         h_true_list = []
         for theta in thetas:
             try:
                 h = make_waveform(theta)
-                h_true_list.append(h)
+                # extract raw data if it's a TimeSeries-like object
+                data = h.data if hasattr(h, 'data') else h
+                h_true_list.append(data)
             except Exception as e:
                 logger.warning("PyCBC waveform error for theta=%s: %s", theta, e)
         t_pycbc = time.perf_counter() - t0
-        if not h_true_list:
+
+        if len(h_true_list) == 0:
             logger.error("No valid PyCBC waveforms generated for n=%d!", n)
             continue
 
@@ -62,97 +72,92 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
         valid_thetas = thetas[: h_true.shape[0]]
         logger.info("Generated %d/%d waveforms in %.3fs", h_true.shape[0], n, t_pycbc)
 
-        # Network prediction
+        # Network single prediction
+        logger.debug("Starting Network single waveform prediction for %d", h_true.shape[0])
+        t0 = time.perf_counter()
+        h_pred_list = []
+        for theta in valid_thetas:
+            m1, m2, spin1_z, spin2_z, inclination, eccentricity = theta
+            try:
+                hs, ps = predictor.predict(m1, m2, spin1_z, spin2_z, inclination, eccentricity)
+                # extract numpy data
+                data = hs.data if hasattr(hs, 'data') else hs
+                h_pred_list.append(data)
+            except Exception as e:
+                logger.warning("Prediction error for theta=%s: %s", theta, e)
+        t_pred_single = time.perf_counter() - t0
+
+        if len(h_pred_list) == 0:
+            logger.error("No valid model predictions for n=%d!", n)
+            continue
+
+        h_pred_single = np.stack(h_pred_list, axis=0)
+        logger.info("Single predictions: %d/%d in %.3fs", h_pred_single.shape[0], h_true.shape[0], t_pred_single)
+
+        # Network batch prediction
         logger.debug("Starting Network batch prediction for %d waveforms", h_true.shape[0])
         t0 = time.perf_counter()
         h_plus, h_cross = predictor.batch_predict(valid_thetas, batch_size=100)
-        t_pred = time.perf_counter() - t0
-        logger.info("Network predicted %d waveforms in %.3fs", n, t_pred)
+        t_pred_batch = time.perf_counter() - t0
+        logger.info("Batch predicted %d waveforms in %.3fs", h_true.shape[0], t_pred_batch)
 
         # Compute matches
-        logger.debug("Computing matches for each pair")
-        matches = []
-        for i in range(h_true.shape[0]):
-            m, _ = compute_match(h_true[i], h_plus[i].data)
-            matches.append(m)
-        matches = np.array(matches)
+        matches_single = [compute_match(h_true[i], h_pred_single[i])[0] for i in range(h_pred_single.shape[0])]
+        matches_batch = [compute_match(h_true[i], h_plus[i].data if hasattr(h_plus[i], 'data') else h_plus[i])[0]
+                         for i in range(h_true.shape[0])]
 
-        mean_match = float(np.mean(matches))
+        mean_match_single = float(np.mean(matches_single))
+        mean_match_batch = float(np.mean(matches_batch))
         logger.info(
-            "n=%d summary: pycbc=%.3fs, predict=%.3fs, mean_match=%.4f",
-            n, t_pycbc, t_pred, mean_match
+            "n=%d summary: pycbc=%.3fs, single=%.3fs, batch=%.3fs, mean_match_single=%.4f, mean_match_batch=%.4f",
+            n, t_pycbc, t_pred_single, t_pred_batch, mean_match_single, mean_match_batch
         )
 
         results[n] = {
-            "pycbc_time_s":   t_pycbc,
-            "predict_time_s": t_pred,
-            "mean_match":     mean_match,
-            "n_success":      h_true.shape[0]
+            "pycbc_time_s": t_pycbc,
+            "single_time_s": t_pred_single,
+            "batch_time_s": t_pred_batch,
+            "mean_match_single": mean_match_single,
+            "mean_match_batch": mean_match_batch,
+            "n_success": h_true.shape[0]
         }
 
-        # Scatter plot of matches vs sample index
-        idx = list(range(len(matches)))
+        # Plotting
+        idx = list(range(len(matches_single)))
         hover_text = [
-            f"m1={theta[0]:.2f}, m2={theta[1]:.2f}<br>"
-            f"chi1z={theta[2]:.2f}, chi2z={theta[3]:.2f}<br>"
-            f"incl={theta[4]:.2f}, ecc={theta[5]:.2f}"
+            f"m1={theta[0]:.2f}, m2={theta[1]:.2f}<br>spin1_z={theta[2]:.2f}, spin2_z={theta[3]:.2f}<br>incl={theta[4]:.2f}, ecc={theta[5]:.2f}"
             for theta in valid_thetas
         ]
 
+        # Scatter
         fig_scatter = go.Figure(go.Scatter(
-            x=idx, y=matches, mode="markers",
-            marker=dict(size=6),
-            hovertext=hover_text,
-            hoverinfo="text"
+            x=idx, y=matches_single, mode="markers",
+            marker=dict(size=6), hovertext=hover_text, hoverinfo="text"
         ))
         fig_scatter.update_layout(
-            title=f"Match vs Sample Index (n={n})",
-            xaxis_title="Sample Index",
-            yaxis_title="Match",
+            title=f"Match vs Index (n={n})",
+            xaxis_title="Index", yaxis_title="Match",
             height=400, width=800
         )
+        scatter_path = os.path.join(out_dir, f"benchmark_scatter_{n}.html")
+        fig_scatter.write_html(scatter_path, include_plotlyjs="cdn", full_html=True)
+        logger.info("Saved scatter to %s", scatter_path)
 
-        scatter_path = os.path.join(out_dir, f"benchmark_scatter_{n}_samples.html")
-        fig_scatter.write_html(
-            scatter_path,
-            include_plotlyjs="cdn",
-            full_html=True
-        )
-        logger.info("Saved scatter plot to %s", scatter_path)
-
-        # Histogram with Gaussian KDE overlay
-        logger.debug("Building histogram with KDE for n=%d", n)
-        kde = gaussian_kde(matches)
-        x_vals = np.linspace(matches.min(), matches.max(), 200)
+        # Histogram + KDE
+        kde = gaussian_kde(matches_single)
+        x_vals = np.linspace(min(matches_single), max(matches_single), 200)
         kde_vals = kde(x_vals)
-
-        hist = go.Histogram(
-            x=matches,
-            histnorm='probability density',
-            name='Histogram',
-            opacity=0.75
-        )
-        kde_line = go.Scatter(
-            x=x_vals,
-            y=kde_vals,
-            mode='lines',
-            name='KDE'
-        )
-        fig_hist = go.Figure(data=[hist, kde_line])
+        hist = go.Histogram(x=matches_single, histnorm='probability density', opacity=0.75)
+        kde_line = go.Scatter(x=x_vals, y=kde_vals, mode='lines')
+        fig_hist = go.Figure([hist, kde_line])
         fig_hist.update_layout(
-            title=f"Match Distribution with Gaussian KDE (n={n})",
-            xaxis_title="Match",
-            yaxis_title="Density",
+            title=f"Match Distribution (n={n})",
+            xaxis_title="Match", yaxis_title="Density",
             height=400, width=800
         )
-
-        hist_path = os.path.join(out_dir, f"benchmark_histogram_{n}_samples.html")
-        fig_hist.write_html(
-            hist_path,
-            include_plotlyjs="cdn",
-            full_html=True
-        )
-        logger.info("Saved histogram plot to %s", hist_path)
+        hist_path = os.path.join(out_dir, f"benchmark_hist_{n}.html")
+        fig_hist.write_html(hist_path, include_plotlyjs="cdn", full_html=True)
+        logger.info("Saved histogram to %s", hist_path)
 
     logger.info("Benchmark complete.")
     return results
