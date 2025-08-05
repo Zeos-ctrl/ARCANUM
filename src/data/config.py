@@ -73,6 +73,15 @@ PHASE_HIDDEN     = MODEL.phase_hidden
 PHASE_BANKS      = MODEL.phase_banks
 PHASE_DROPOUT    = 0.1
 
+# Fourier‐feature embedding for both amp & phase models
+AMP_FOURIER_BANDS      = 16      # number of sin/cos pairs per θ‐dimension
+AMP_FOURIER_MAX_FREQ   = 10.0    # highest frequency in log‐spaced band
+AMP_FOURIER_LEARNABLE  = False   # whether to tune the band frequencies
+
+PHASE_FOURIER_BANDS    = 16
+PHASE_FOURIER_MAX_FREQ = 10.0
+PHASE_FOURIER_LEARNABLE= False
+
 # Scheduler sub‑block
 SCHEDULER_CFG    = SimpleNamespace(**TRAINING.scheduler)
 

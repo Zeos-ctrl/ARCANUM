@@ -14,9 +14,11 @@ from src.data.config import (
     VAL_SPLIT, RANDOM_SEED, CHECKPOINT_DIR,
     GRADIENT_CLIP, AMP_EMB_HIDDEN, PHASE_EMB_HIDDEN
 )
-from src.data.dataset import generate_data
+from src.data.dataset import generate_data, save_dataset, load_dataset
 from src.models.model_factory import make_amp_model, make_phase_model
 from src.utils.utils import notify_discord
+
+logger = logging.getLogger(__name__)
 
 HPO_SAMPLE_COUNT = 50
 DATA_PATH = 'dataset.pt'
@@ -228,7 +230,8 @@ def train_and_eval_phase(
 
 # Optuna objectives
 def objective_amp(trial):
-    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    #lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    lr = 0.0009
     amp_size   = trial.suggest_categorical("amp_hidden_size", [64, 128, 256, 512])
     banks      = trial.suggest_int("banks", 1, 6)
     dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)
@@ -254,7 +257,8 @@ def objective_amp(trial):
 
 
 def objective_phase(trial):
-    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    #lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
+    lr = 0.0009
     phase_size = trial.suggest_categorical("phase_hidden_size", [64, 128, 256, 512])
     banks      = trial.suggest_int("banks", 1, 6)
     dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)

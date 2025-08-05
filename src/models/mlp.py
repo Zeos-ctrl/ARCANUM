@@ -2,6 +2,32 @@ import torch
 import torch.nn as nn
 from src.data.config import DEVICE
 
+
+class FourierFeature(nn.Module):
+    """
+    Maps a D-dim input to a 2*D*B feature vector via sinusoids:
+      x → [sin(2π B x), cos(2π B x)]
+    where B is a learnable or fixed frequency matrix.
+    """
+    def __init__(self, in_dim, num_bands=16, max_freq=10.0, learnable=False):
+        super().__init__()
+        # Create frequency bands (log‐spaced)
+        bands = torch.logspace(0., torch.log10(torch.tensor(max_freq)), num_bands)
+        # shape: (in_dim, num_bands)
+        self.register_buffer('bands', bands.unsqueeze(0).repeat(in_dim, 1))
+        if learnable:
+            # Optionally make them learnable:
+            self.bands = nn.Parameter(self.bands)
+        self.in_dim = in_dim
+        self.num_bands = num_bands
+
+    def forward(self, x):
+        # x: (B, in_dim)
+        # → (B, in_dim, num_bands)
+        x_exp = x.unsqueeze(-1) * self.bands.unsqueeze(0) * 2 * torch.pi
+        # flatten the sin/cos pair: (B, in_dim * num_bands * 2)
+        return torch.cat([torch.sin(x_exp), torch.cos(x_exp)], dim=-1).flatten(1)
+
 class ResidualBlock(nn.Module):
     def __init__(self, dim, dropout=0.1):
         super().__init__()
@@ -65,32 +91,46 @@ class PhaseSubNet(nn.Module):
 
 class PhaseDNN_Full(nn.Module):
     """
-    PhaseDNN that learns phi(t; theta), with a BatchNorm+Dropout embeder and residual PhaseSubNets.
+    PhaseDNN with Fourier‐feature embedding of θ.
     """
-    def __init__(self, param_dim=5, time_dim=1, emb_hidden=[64,64],
-                 phase_hidden=[128,128,128,128], N_banks=1, dropout=0.1):
+    def __init__(self, param_dim=5, time_dim=1,
+                 fourier_bands=16, fourier_max_freq=10.0, fourier_learnable=False,
+                 phase_hidden=[128,128,128], N_banks=1, dropout=0.1):
         super().__init__()
         self.N_banks = N_banks
 
-        # embed theta -> emb_dim, with BN and Dropout
-        emb_dim = emb_hidden[-1]
-        self.theta_embed = MLP(param_dim, emb_hidden, emb_dim, dropout=dropout)
+        # Replace MLP θ_embed with FourierFeature + final linear
+        fourier_dim = param_dim * fourier_bands * 2
+        self.theta_ff = FourierFeature(param_dim,
+                                       num_bands=fourier_bands,
+                                       max_freq=fourier_max_freq,
+                                       learnable=fourier_learnable)
+        # optionally project down to an embedding
+        emb_dim = fourier_dim
+        self.theta_proj = nn.Sequential(
+            nn.Linear(fourier_dim, emb_dim),
+            nn.BatchNorm1d(emb_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
 
         # per‐bank phase subnets
         for i in range(N_banks):
-            net_i = PhaseSubNet(input_dim=time_dim+emb_dim,
+            net_i = PhaseSubNet(input_dim=time_dim + emb_dim,
                                 hidden_dims=phase_hidden,
                                 dropout=dropout)
             setattr(self, f"phase_net_{i}", net_i)
 
     def forward(self, t_norm, theta):
-        emb = self.theta_embed(theta) # (B, emb_dim)
-        phi_total = torch.zeros_like(t_norm).to(DEVICE)
+        # theta: (B, param_dim)
+        ff = self.theta_ff(theta)            # (B, fourier_dim)
+        emb = self.theta_proj(ff)            # (B, emb_dim)
+        phi_total = torch.zeros_like(t_norm, device=DEVICE)
+
+        x_i = torch.cat([t_norm, emb], dim=-1)
         for i in range(self.N_banks):
             net_i = getattr(self, f"phase_net_{i}")
-            x_i = torch.cat([t_norm, emb], dim=-1)
-            phi_i = net_i(x_i)
-            phi_total = phi_total + phi_i
+            phi_total = phi_total + net_i(x_i)
         return phi_total
 
 class AmpSubNet(nn.Module):
@@ -121,14 +161,12 @@ class AmpSubNet(nn.Module):
 
 class AmplitudeDNN_Full(nn.Module):
     """
-    Full amplitude network: embeds theta, then sums N_banks of AmpSubNets over time.
-    Output is squashed into [0,1] with a final Sigmoid.
+    AmplitudeDNN with Fourier‐feature embedding of θ.
     """
-    def __init__(
-        self,
+    def __init__(self,
         in_param_dim=5,
         time_dim=1,
-        emb_hidden=(64,64),
+        fourier_bands=16, fourier_max_freq=10.0, fourier_learnable=False,
         amp_hidden=(128,128,128),
         N_banks=2,
         dropout=0.1
@@ -136,9 +174,19 @@ class AmplitudeDNN_Full(nn.Module):
         super().__init__()
         self.N_banks = N_banks
 
-        # embed theta → emb_dim
-        emb_dim = emb_hidden[-1]
-        self.theta_embed = MLP(in_dim=in_param_dim, hidden_dims=list(emb_hidden), out_dim=emb_dim, dropout=dropout)
+        # Fourier‐feature embed θ
+        fourier_dim = in_param_dim * fourier_bands * 2
+        self.theta_ff = FourierFeature(in_param_dim,
+                                       num_bands=fourier_bands,
+                                       max_freq=fourier_max_freq,
+                                       learnable=fourier_learnable)
+        emb_dim = fourier_dim
+        self.theta_proj = nn.Sequential(
+            nn.Linear(fourier_dim, emb_dim),
+            nn.BatchNorm1d(emb_dim),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+        )
 
         # per‐bank amplitude subnets
         for i in range(N_banks):
@@ -149,27 +197,14 @@ class AmplitudeDNN_Full(nn.Module):
             )
             setattr(self, f"amp_net_{i}", net_i)
 
-        # final squash into [0,1]
         self.out_act = nn.Sigmoid()
 
     def forward(self, t_norm, theta):
-        """
-        t_norm: (B,1)  normalized time
-        theta:  (B,param_dim)
-        returns: (B,1) amplitude in [0,1]
-        """
-        # embed parameters
-        emb = self.theta_embed(theta)      # (B, emb_dim)
+        ff = self.theta_ff(theta)     # (B, fourier_dim)
+        emb = self.theta_proj(ff)     # (B, emb_dim)
+        x = torch.cat([t_norm, emb], dim=-1)
 
-        # stack input for each bank
-        x = torch.cat([t_norm, emb], dim=-1)  # (B, time+emb_dim)
-
-        # sum bank outputs
         A_total = 0
         for i in range(self.N_banks):
-            net_i = getattr(self, f"amp_net_{i}")
-            A_i = net_i(x)                   # (B,1)
-            A_total = A_total + A_i
-
-        # squash to [0,1]
+            A_total = A_total + getattr(self, f"amp_net_{i}")(x)
         return self.out_act(A_total)
