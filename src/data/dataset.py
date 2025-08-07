@@ -90,28 +90,24 @@ def sample_parameters(n, seed=None, method="lhs", gaussian_std_factor=4.0):
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 
-def _resample_and_fill(h: np.ndarray, target_len: int) -> np.ndarray:
+def _resample_and_fill(h: np.ndarray, target_len: int, tolerance: float = 1e-20) -> np.ndarray:
     """
-    Trim leading/trailing zeros from h, then interpolate the 
+    Trim leading/trailing zeros (or near-zero values) from h, then interpolate the
     non-zero segment uniformly back to length `target_len`.
     """
-    # find non-zero region
-    nz = np.where(h != 0)[0]
+    # Find non-zero region with tolerance
+    nz = np.where(np.abs(h) > tolerance)[0]
     if nz.size == 0:
-        # all zeros? just return zeros
+        # All values are near zero? Return zeros
         return np.zeros(target_len, dtype=h.dtype)
-
     start, end = nz[0], nz[-1]
     segment = h[start:end+1]
-
-    # build old & new sample grids
+    # Build old & new sample grids
     old_x = np.linspace(0, 1, len(segment))
     new_x = np.linspace(0, 1, target_len)
-
-    # linear interpolation (extrapolate just in case)
+    # Linear interpolation (extrapolate just in case)
     f = interp1d(old_x, segment, kind='linear', fill_value='extrapolate')
     return f(new_x)
-
 
 def make_waveform(theta, waveform=WAVEFORM):
     """Generate a *clean* waveform of exactly WAVEFORM_LENGTH samples."""
@@ -193,10 +189,11 @@ def generate_data(
     alpha: float = 0.1,
     snr_min: float = SNR_MIN,
     snr_max: float = SNR_MAX,
-    waveform: str = WAVEFORM
+    waveform: str = WAVEFORM,
+    seed: int = None,
 ) -> GeneratedDataset:
     logger.info(f"Generating {'clean' if clean else 'noisy'} dataset...")
-    thetas = sample_parameters(samples)  # (N,6)
+    thetas = sample_parameters(samples, seed=seed)  # (N,6)
 
     # enforce zero‐spin if that feature’s off
     if "effective_spin" not in TRAIN_FEATURES:
