@@ -113,7 +113,7 @@ def _resample_and_fill(h: np.ndarray, target_len: int) -> np.ndarray:
     return f(new_x)
 
 
-def make_waveform(theta):
+def make_waveform(theta, waveform=WAVEFORM):
     """Generate a *clean* waveform of exactly WAVEFORM_LENGTH samples."""
     m1, m2, chi1z, chi2z, incl, ecc = theta
     hp, _ = get_td_waveform(
@@ -121,7 +121,7 @@ def make_waveform(theta):
         spin1z=chi1z, spin2z=chi2z,
         inclination=incl, eccentricity=ecc,
         delta_t=DELTA_T, f_lower=F_LOWER,
-        approximant=WAVEFORM
+        approximant=waveform
     )
     h_plus = hp.numpy()
 
@@ -145,7 +145,7 @@ def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     )
     h_clean = hp.numpy()
 
-    # 2) whiten & scale to target SNR  
+    # whiten & scale to target SNR  
     Hf      = fft(h_clean)
     sqrt_psd = np.sqrt(psd_arr) + 1e-30
     Hf_white = Hf / sqrt_psd
@@ -155,13 +155,13 @@ def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     scale     = (snr_target / rho_clean) if rho_clean > 0 else 1.0
     h_scaled  = h_clean * scale
 
-    # 3) add noise
+    # add noise
     noise_td = noise.noise_from_psd(
         len(h_scaled), DELTA_T, psd_arr, seed=seed
     ).numpy()
     h_noisy = h_scaled + noise_td
 
-    # 4) trim & resample
+    # trim & resample
     return _resample_and_fill(h_noisy, WAVEFORM_LENGTH)
 
 def compute_global_scale(inst_target: np.ndarray, target_peak: float = 1.0) -> float:
@@ -192,7 +192,8 @@ def generate_data(
     samples: int = NUM_SAMPLES,
     alpha: float = 0.1,
     snr_min: float = SNR_MIN,
-    snr_max: float = SNR_MAX
+    snr_max: float = SNR_MAX,
+    waveform: str = WAVEFORM
 ) -> GeneratedDataset:
     logger.info(f"Generating {'clean' if clean else 'noisy'} dataset...")
     thetas = sample_parameters(samples)  # (N,6)
@@ -202,7 +203,7 @@ def generate_data(
         thetas[:,2] = 0.0
         thetas[:,3] = 0.0
     if "inclination" not in TRAIN_FEATURES:
-        thetas[:,4] = 0.01
+        thetas[:,4] = np.pi/2
     if "eccentricity" not in TRAIN_FEATURES:
         thetas[:,5] = 0.0
 
@@ -230,7 +231,7 @@ def generate_data(
         theta_raw = thetas[i]
         if clean:
             # no noise
-            hp_seg = make_waveform(theta_raw)
+            hp_seg = make_waveform(theta_raw, waveform=waveform)
         else:
             # pick a random SNR in [snr_min, snr_max]
             snr_target = float(np.random.uniform(snr_min, snr_max))
@@ -248,7 +249,9 @@ def generate_data(
         analytic     = hilbert(hp_seg)
         inst_amp     = np.abs(analytic) + eps
         all_amp[i]    = inst_amp
-        all_phi_unwrap[i] = np.unwrap(np.angle(analytic))
+        # adjust the phase to start at 0
+        phi = np.unwrap(np.angle(analytic))
+        all_phi_unwrap[i] = phi - phi[0]
 
     # normalize amp -> [0,1]
     scale = compute_global_scale(all_amp, target_peak=1.0)

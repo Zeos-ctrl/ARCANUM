@@ -276,8 +276,7 @@ class WaveformPredictor:
         h_plus  = amp * ((1 + cosi**2)/2) * np.cos(phi)
         h_cross = amp * ( cosi ) * np.sin(phi)
 
-        # wrap into TimeSeriesStrainData, as we dont calculate uncertainty just
-        # duplicate strain, in future iterations get rid of it
+        # wrap into TimeSeriesStrainData
         plus = TimeSeriesStrainData(
             data        = h_plus,
             uncertainty = None,

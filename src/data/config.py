@@ -6,7 +6,6 @@ from enum import Enum
 
 class ModelType(str, Enum):
     MLP = "mlp"
-    FNO = "fno"
 
 MODEL_TYPE: ModelType = ModelType.MLP
 
