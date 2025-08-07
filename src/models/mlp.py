@@ -16,14 +16,12 @@ class FourierFeature(nn.Module):
         # shape: (in_dim, num_bands)
         self.register_buffer('bands', bands.unsqueeze(0).repeat(in_dim, 1))
         if learnable:
-            # Optionally make them learnable:
             self.bands = nn.Parameter(self.bands)
         self.in_dim = in_dim
         self.num_bands = num_bands
 
     def forward(self, x):
         # x: (B, in_dim)
-        # → (B, in_dim, num_bands)
         x_exp = x.unsqueeze(-1) * self.bands.unsqueeze(0) * 2 * torch.pi
         # flatten the sin/cos pair: (B, in_dim * num_bands * 2)
         return torch.cat([torch.sin(x_exp), torch.cos(x_exp)], dim=-1).flatten(1)
@@ -99,13 +97,12 @@ class PhaseDNN_Full(nn.Module):
         super().__init__()
         self.N_banks = N_banks
 
-        # Replace MLP θ_embed with FourierFeature + final linear
         fourier_dim = param_dim * fourier_bands * 2
         self.theta_ff = FourierFeature(param_dim,
                                        num_bands=fourier_bands,
                                        max_freq=fourier_max_freq,
                                        learnable=fourier_learnable)
-        # optionally project down to an embedding
+        # project down to an embedding
         emb_dim = fourier_dim
         self.theta_proj = nn.Sequential(
             nn.Linear(fourier_dim, emb_dim),
@@ -174,7 +171,7 @@ class AmplitudeDNN_Full(nn.Module):
         super().__init__()
         self.N_banks = N_banks
 
-        # Fourier‐feature embed θ
+        # Fourier‐feature embed theta
         fourier_dim = in_param_dim * fourier_bands * 2
         self.theta_ff = FourierFeature(in_param_dim,
                                        num_bands=fourier_bands,

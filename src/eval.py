@@ -4,6 +4,7 @@ import logging
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import hilbert
+from scipy.interpolate import griddata
 import matplotlib.ticker as mticker
 
 # PyCBC waveform
@@ -414,6 +415,83 @@ def plot_prediction_uncertainty(
 
     logger.info(f"Saved uncertainty plot to {output_path}")
 
+def generate_match_heatmap(MASS_MIN, MASS_MAX,
+                           chi1z=0.0, chi2z=0.0,
+                           incl=0.0, ecc=0.0,
+                           output_path: str = "plots/heatmap.png"):
+    """
+    Generates and plots a *smooth* 2D heatmap of match values over (m1, m2),
+    sampling both masses from MASS_MIN to MASS_MAX in steps of 5, then
+    interpolating to a fine grid for display.
+    """
+    step = 5
+    # coarse sampling grid
+    m1_vals = np.arange(MASS_MIN, MASS_MAX + step, step)
+    m2_vals = np.arange(MASS_MIN, MASS_MAX + step, step)
+
+    pts_m1, pts_m2, pts_match = [], [], []
+    pred = WaveformPredictor("checkpoints", device=DEVICE)
+
+    # compute matches at coarse points
+    for m1 in m1_vals:
+        for m2 in m2_vals:
+            # true waveform padded/truncated
+            hp_t, _ = get_td_waveform(
+                approximant=WAVEFORM,
+                mass1=m1, mass2=m2,
+                spin1z=chi1z, spin2z=chi2z,
+                inclination=incl,
+                delta_t=DELTA_T,
+                f_lower=20.0
+            )
+            hp_true = np.asarray(hp_t.data[-int(WAVEFORM_LENGTH/DELTA_T):])
+
+            # predicted waveform
+            hp_p, _ = pred.predict(
+                m1, m2, chi1z, chi2z, incl, ecc,
+                waveform_length=WAVEFORM_LENGTH,
+                sampling_dt=DELTA_T
+            )
+            hp_pred = np.asarray(hp_p.data[-int(WAVEFORM_LENGTH/DELTA_T):])
+
+            match_val, _ = compute_match(hp_true, hp_pred)
+            pts_m1.append(m1)
+            pts_m2.append(m2)
+            pts_match.append(match_val)
+
+    # now build a fine grid for smooth plotting
+    fine_n = 200
+    m1_fine = np.linspace(MASS_MIN, MASS_MAX, fine_n)
+    m2_fine = np.linspace(MASS_MIN, MASS_MAX, fine_n)
+    m1_grid_f, m2_grid_f = np.meshgrid(m1_fine, m2_fine)
+
+    # cubic interpolation onto fine grid
+    match_grid_f = griddata(
+        (pts_m1, pts_m2),
+        pts_match,
+        (m1_grid_f, m2_grid_f),
+        method='cubic'
+    )
+
+    # plot
+    plt.figure(figsize=(10, 8))
+    im = plt.imshow(
+        match_grid_f,
+        extent=[MASS_MIN, MASS_MAX, MASS_MIN, MASS_MAX],
+        origin='lower',
+        cmap='viridis',
+        aspect='auto',
+        interpolation='bilinear',  # smooth the image
+    )
+    plt.colorbar(im, label='Match Value')
+    plt.xlabel('m1 [$M_\\odot$]')
+    plt.ylabel('m2 [$M_\\odot$]')
+    plt.title(f'Match Heatmap ({MASS_MIN}–{MASS_MAX} $M_\\odot$, coarse step={step})')
+
+    plt.tight_layout()
+    plt.savefig(output_path)
+    plt.close()
+    logger.info(f"Saved smooth heatmap to {output_path}")
 
 if __name__ == "__main__":
     # Logging
@@ -435,6 +513,7 @@ if __name__ == "__main__":
     evaluate()
     matches = cross_correlation()
     polar()
+    generate_match_heatmap(40,110)
 
 #    notify_discord(
 #            f"Evaluation complete! cross correlation matches: {matches}\n"

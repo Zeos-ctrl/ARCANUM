@@ -198,3 +198,4 @@ logs/*
 plots/*
 checkpoints/*
 *.pt
+dataset.pt
