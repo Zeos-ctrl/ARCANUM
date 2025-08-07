@@ -12,7 +12,7 @@ from pycbc.waveform import get_td_waveform
 
 # Libraries
 from src.data.config import *
-from src.data.dataset import generate_data
+from src.data.dataset import generate_data, make_waveform
 from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 from src.data.dataset import unscale_target
 
@@ -305,63 +305,6 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
 
     return matches
 
-def polar():
-    logger.info("Plotting same parameters over 0.25s, 0.5s, and 1.0s durations")
-
-    pred = WaveformPredictor("checkpoints", device=DEVICE)
-
-    # pick one parameter set, here first entry
-    data = generate_data(samples=5)
-    m1, m2, chi1z, chi2z, incl, ecc = data.thetas[0]
-    logger.info(f"Using params m1={m1:.1f}, m2={m2:.1f}, chi1z={chi1z:.2f}, "
-                f"chi2z={chi2z:.2f}, incl={incl:.2f}, ecc={ecc:.2f}")
-
-    # base sampling interval from checkpoint
-    dt = pred.delta_t
-
-    # desired durations (seconds)
-    durations = [0.25, 0.5, 1.0]
-
-    # prepare figure: 3 rows, 2 cols
-    fig, axs = plt.subplots(3, 2, figsize=(12, 10), sharex=False)
-    fig.suptitle("Waveforms at 0.25 s, 0.5 s, 1.0 s Durations", fontsize=16)
-
-    for row, duration in enumerate(durations):
-        # compute number of samples
-        L = int(np.round(duration / dt))
-
-        # get waveform
-        h_plus, h_cross = pred.predict(
-            m1, m2, chi1z, chi2z, incl, ecc,
-            waveform_length=L,
-            sampling_dt=dt
-        )
-
-        # plus
-        ax_p = axs[row, 0]
-        ax_p.plot(h_plus.time, h_plus.data, linewidth=1)
-        ax_p.set_ylabel("h+")
-        ax_p.set_title(f"Duration = {duration:.2f} s ({L} samples)")
-        ax_p.grid(True)
-
-        # cross
-        ax_c = axs[row, 1]
-        ax_c.plot(h_cross.time, h_cross.data, linewidth=1, color="C1")
-        ax_c.set_ylabel("hx")
-        ax_c.set_title(f"Duration = {duration:.2f} s ({L} samples)")
-        ax_c.grid(True)
-
-        # only bottom row gets x-label
-        if row == len(durations)-1:
-            ax_p.set_xlabel("Time [s]")
-            ax_c.set_xlabel("Time [s]")
-
-    plt.tight_layout(rect=[0, 0, 1, 0.96])
-    os.makedirs("plots", exist_ok=True)
-    outfile = os.path.join("plots", "waveforms_varying_duration.png")
-    plt.savefig(outfile)
-    logger.info(f"Saved varying‐duration waveforms to {outfile}")
-
 def plot_prediction_uncertainty(
     predictor: WaveformPredictor,
     mass_1: float, mass_2: float,
@@ -436,14 +379,7 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     for m1 in m1_vals:
         for m2 in m2_vals:
             # true waveform padded/truncated
-            hp_t, _ = get_td_waveform(
-                approximant=WAVEFORM,
-                mass1=m1, mass2=m2,
-                spin1z=chi1z, spin2z=chi2z,
-                inclination=incl,
-                delta_t=DELTA_T,
-                f_lower=20.0
-            )
+            hp_t = make_waveform((m2,m2,chi1z,chi2z,incl,ecc))
             hp_true = np.asarray(hp_t.data[-int(WAVEFORM_LENGTH/DELTA_T):])
 
             # predicted waveform
@@ -474,7 +410,7 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     )
 
     # plot
-    plt.figure(figsize=(10, 8))
+    plt.figure(figsize=(16, 8))
     im = plt.imshow(
         match_grid_f,
         extent=[MASS_MIN, MASS_MAX, MASS_MIN, MASS_MAX],
@@ -512,7 +448,6 @@ if __name__ == "__main__":
 
     evaluate()
     matches = cross_correlation()
-    polar()
     generate_match_heatmap(40,110)
 
 #    notify_discord(
