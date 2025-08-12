@@ -15,7 +15,7 @@ with open(_CONFIG_PATH, "r") as f:
     _cfg = yaml.safe_load(f)
 
 # Pick which approximant profile to use
-PROFILE = os.getenv("WF_PROFILE", "seobnrv4")
+PROFILE = os.getenv("WF_PROFILE", "phenomd")
 PYCBC = _cfg["pycbc"][PROFILE]
 SAMPLING_RANGES = SimpleNamespace(**_cfg["sampling_ranges"])
 TRAINING = SimpleNamespace(**_cfg["training"])
@@ -66,11 +66,16 @@ MIN_DELTA        = float(TRAINING.min_delta)
 AMP_EMB_HIDDEN   = MODEL.amp_emb_hidden
 AMP_HIDDEN       = MODEL.amp_hidden
 AMP_BANKS        = MODEL.amp_banks
-AMP_DROPOUT    = 0.1
+AMP_DROPOUT      = MODEL.amp_dropout
+AMP_LR           = MODEL.amp_lr
+AMP_CLIP         = MODEL.amp_clip
+
 PHASE_EMB_HIDDEN = MODEL.phase_emb_hidden
 PHASE_HIDDEN     = MODEL.phase_hidden
 PHASE_BANKS      = MODEL.phase_banks
-PHASE_DROPOUT    = 0.1
+PHASE_DROPOUT    = MODEL.phase_dropout
+PHASE_LR         = MODEL.phase_lr
+PHASE_CLIP       = MODEL.phase_clip
 
 # Fourier‐feature embedding for both amp & phase models
 AMP_FOURIER_BANDS      = 16      # number of sin/cos pairs per θ‐dimension
@@ -102,9 +107,9 @@ CHECKPOINT_DIR   = _cfg["paths"]["checkpoint_dir"]
 
 # Inputs to train the network, comment out to disable
 TRAIN_FEATURES = [
-    "chirp_mass",
+#    "chirp_mass",
     "symmetric_mass_ratio",
-    "effective_spin",
+#    "effective_spin",
 #    "inclination",
 #    "eccentricity",
 ]

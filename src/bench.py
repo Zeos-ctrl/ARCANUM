@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import torch
 
-from src.data.config import DEVICE
+from src.data.config import DEVICE, WAVEFORM
 from src.data.dataset import sample_parameters, generate_data
 from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 
@@ -51,7 +51,7 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
 
         # 1) Data generation
         t0 = time.perf_counter()
-        dataset = generate_data(clean=True, samples=n)
+        dataset = generate_data(waveform=WAVEFORM, clean=True, samples=n)
         t_gen = time.perf_counter() - t0
         logger.info("Generated dataset of %d samples in %.3fs", n, t_gen)
 
@@ -157,10 +157,11 @@ if __name__ == "__main__":
             logging.FileHandler("logs/benchmark.log", mode='a'),
         ]
     )
+    logger.info(f"Using {WAVEFORM} approximant...")
 
     # Instantiate predictor once
     predictor = WaveformPredictor("checkpoints", device=DEVICE)
-    sample_counts = [10,100,1000]
+    sample_counts = [10,100,1000,10000]
 
     # Run benchmark
     results = benchmark(sample_counts, predictor)
