@@ -1,25 +1,31 @@
 pycbc:
   seobnrv4:
     waveform_name:   "SEOBNRv4"
-    delta_t:         1024
+    delta_t:         2056
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 2048
+    waveform_length: 2056
 
   phenomd:
     waveform_name:   "IMRPhenomD"
-    delta_t:         512
+    delta_t:         2056
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 1024
+    waveform_length: 2056
 
 model:
   amp_emb_hidden: [64,64]
-  amp_hidden: [256,256,256,256]
-  amp_banks: 4
+  amp_hidden: [128,128,128]
+  amp_banks: 1
+  amp_dropout: 0.1
+  amp_lr: 0.0009
+  amp_clip: 3
   phase_emb_hidden: [64,64]
-  phase_hidden: [256,256,256,256]
-  phase_banks: 4
+  phase_hidden: [256,256,256,256, 256]
+  phase_banks: 6
+  phase_dropout: 0.1
+  phase_lr: 0.0007
+  phase_clip: 4
 
 sampling_ranges:
   mass_min:     50.0
@@ -70,11 +76,10 @@ training:
 device: "cuda"
 
 notifications:
-  webhook_url:  
-    "https://discord.com/api/webhooks/1392085647480721428/wDGdLRmMXrStJXhobZTjkAa4SrW35BKoRTMcdLKBFDdq-qiECTjD-2SYLa4cLL3ZU2Bx"
+  webhook_url: 0
   discord_bot_token: ""
-  status_channel_id: 1392085614375206932
-  guild_id: 1392085562323636348
+  status_channel_id: 0
+  guild_id: 0
 
 paths:
   checkpoint_dir: "checkpoints"

@@ -5,7 +5,9 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import hilbert
 from scipy.interpolate import griddata
+from mpl_toolkits.mplot3d import Axes3D
 import matplotlib.ticker as mticker
+from scipy.stats import gaussian_kde
 
 # PyCBC waveform
 from pycbc.waveform import get_td_waveform
@@ -15,6 +17,11 @@ from src.data.config import *
 from src.data.dataset import generate_data, make_waveform
 from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 from src.data.dataset import unscale_target
+
+import time
+from typing import Sequence, Dict, Any
+import pandas as pd
+from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +79,7 @@ def evaluate():
                  f"incl={incl:.2f}, ecc={ecc:.2f}, "
                  f"waveform match = {match}")
     logger.info(f"Evaluating for parameters: {title_str}")
+    logger.info(f"Using {WAVEFORM} approximant...")
     fig.suptitle(f"{title_str}", fontsize=16)
 
     # Top row: true vs pred
@@ -157,14 +165,13 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
     """
     Generate 'samples' waveforms, predict them, compute per-pair cross-correlation (true[i] vs pred[i]),
     and plot:
-      - Grid comparison (strain, amplitude, phase) for best and worst matching pairs
+      - Grid comparison (strain, amplitude, phase) for best and worst matching pairs (differences normalized 0-1)
       - Scatter of match vs mass ratio q
-      - 3D scatter of (m1, m2, match)
+      - Smooth 3D surface (m1, m2 -> match) filling the full x-y area
 
-    Saves plots in 'plots/cross_correlation_pairs'.
-    Returns:
-      matches: np.ndarray of shape (samples,) with match values for each pair.
+    Saves plots in 'plots/cross_correlation'. Returns matches array (shape (samples,)).
     """
+
     # Prepare output directory
     plot_dir = "plots/cross_correlation"
     os.makedirs(plot_dir, exist_ok=True)
@@ -181,16 +188,28 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
     qs, m1s, m2s = [], [] ,[]
     matches = np.zeros(samples)
 
+    # Helper: normalize absolute residuals to [0,1] per-array
+    def _norm01_abs(x):
+        x = np.asarray(x, dtype=float)
+        x = np.abs(x)
+        amin = np.nanmin(x)
+        amax = np.nanmax(x)
+        if np.isclose(amax, amin):
+            return np.zeros_like(x)
+        return (x - amin) / (amax - amin)
+
     # Generate, predict and match each sample
     for idx in range(samples):
         m1, m2, c1z, c2z, incl_i, ecc_i = thetas[idx]
-        # True waveform
+        # True waveform (unscale amplitude)
         amp_norm = data.targets_A.reshape(-1, L)[idx]
         phi_arr  = data.targets_phi.reshape(-1, L)[idx]
         amp_true = unscale_target(amp_norm, pred.amp_scale)
         h_true   = amp_true * np.cos(phi_arr)
-        # Prediction
+        # Prediction (assume predict_debug returns unscaled amp and phi)
         t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl_i, ecc_i)
+        amp_pred = np.asarray(amp_pred)
+        phi_pred = np.asarray(phi_pred)
         h_pred = amp_pred * np.cos(phi_pred)
 
         # Compute match
@@ -199,24 +218,32 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
         # Store
         h_trues.append(h_true)
         h_preds.append(h_pred)
-        t_norms.append(t_norm)
+        t_norms.append(np.asarray(t_norm))
         matches[idx] = match_val
         m1s.append(m1)
         m2s.append(m2)
         qs.append(m2/m1)
 
-    best_idx = np.argmax(matches)
-    worst_idx = np.argmin(matches)
+    best_idx = int(np.argmax(matches))
+    worst_idx = int(np.argmin(matches))
 
     def plot_comparison(idx, title, fname):
         # Compute analytic signals
-        h_t, h_p, t = h_trues[idx], h_preds[idx], t_norms[idx]
+        h_t = np.asarray(h_trues[idx])
+        h_p = np.asarray(h_preds[idx])
+        t   = np.asarray(t_norms[idx])
         an_t = hilbert(h_t); A_t = np.abs(an_t); ph_t = np.unwrap(np.angle(an_t))
         an_p = hilbert(h_p); A_p = np.abs(an_p); ph_p = np.unwrap(np.angle(an_p))
-        # Differences
-        dh = h_p - h_t
-        dA = A_p - A_t
-        dph = ph_p - ph_t
+
+        # Raw differences
+        dh_raw = h_p - h_t
+        dA_raw = A_p - A_t
+        dph_raw = ph_p - ph_t
+
+        # Normalized absolute residuals [0,1] per-array
+        dh = _norm01_abs(dh_raw)
+        dA = _norm01_abs(dA_raw)
+        dph = _norm01_abs(dph_raw)
 
         fig, axs = plt.subplots(2, 2, figsize=(18, 10))
         # Strain
@@ -227,11 +254,11 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
         ax.set_ylabel('Strain')
         ax.grid(True)
         ax.legend()
-        # Amplitude
+        # Amplitude (unscaled analytic envelopes)
         ax = axs[0, 1]
-        ax.plot(t, A_t, label='True Amp', linewidth=1)
-        ax.plot(t, A_p, '--', label='Pred Amp', linewidth=1)
-        ax.set_title('Amplitude Comparison')
+        ax.plot(t, A_t, label='True Amp (unscaled)', linewidth=1)
+        ax.plot(t, A_p, '--', label='Pred Amp (unscaled)', linewidth=1)
+        ax.set_title('Amplitude Comparison (unscaled)')
         ax.set_ylabel('Amplitude')
         ax.grid(True)
         ax.legend()
@@ -244,14 +271,14 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
         ax.set_ylabel('Phase (rad)')
         ax.grid(True)
         ax.legend()
-        # Difference
+        # Normalized Differences (0-1)
         ax = axs[1, 1]
-        ax.plot(t, dh, label='d Strain', linewidth=1)
-        ax.plot(t, dA, label='d Amplitude', linestyle='--', linewidth=1)
-        ax.plot(t, dph, label='d Phase', linestyle=':', linewidth=1)
-        ax.set_title('Differences')
+        ax.plot(t, dh, label='|d Strain| (norm 0-1)', linewidth=1)
+        ax.plot(t, dA, label='|d Amp| (norm 0-1)', linestyle='--', linewidth=1)
+        ax.plot(t, dph, label='|d Phase| (norm 0-1)', linestyle=':', linewidth=1)
+        ax.set_title('Normalized Differences (absolute, min-max → 0..1)')
         ax.set_xlabel('Normalized Time')
-        ax.set_ylabel('Difference')
+        ax.set_ylabel('Normalized residual')
         ax.grid(True)
         ax.legend(loc='upper right', fontsize='small')
 
@@ -275,30 +302,36 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
     plt.savefig(os.path.join(plot_dir, "match_vs_q.png"), dpi=150)
     plt.close()
 
-    from scipy.interpolate import griddata
+    # --- Smooth 3D surface that fills the whole x-y area ---
+    # build grid over full rectangle and interpolate smoothly
+    m1s_arr = np.asarray(m1s)
+    m2s_arr = np.asarray(m2s)
+    pts = np.vstack([m1s_arr, m2s_arr]).T
+    vals = np.asarray(matches)
 
-    m1_grid = np.linspace(min(m1s), max(m1s), num=100)
-    m2_grid = np.linspace(min(m2s), max(m2s), num=100)
-    m1_grid, m2_grid = np.meshgrid(m1_grid, m2_grid)
+    # higher resolution grid for smoothness
+    nx = ny = 400
+    m1_lin = np.linspace(m1s_arr.min(), m1s_arr.max(), nx)
+    m2_lin = np.linspace(m2s_arr.min(), m2s_arr.max(), ny)
+    M1_grid, M2_grid = np.meshgrid(m1_lin, m2_lin)
 
-    match_grid = griddata(
-        (m1s, m2s), matches, (m1_grid, m2_grid), method='linear'
-    )
+    # cubic for smooth interior, nearest to fill NaNs at boundaries
+    match_grid_cubic = griddata(pts, vals, (M1_grid, M2_grid), method='cubic')
+    mask_nan = np.isnan(match_grid_cubic)
+    if mask_nan.any():
+        match_grid_nearest = griddata(pts, vals, (M1_grid, M2_grid), method='nearest')
+        match_grid_cubic[mask_nan] = match_grid_nearest[mask_nan]
+    match_grid = match_grid_cubic
 
+    # Plot surface
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
-
-    surf = ax.plot_surface(
-        m1_grid, m2_grid, match_grid, cmap='viridis', edgecolor='none'
-    )
-
+    surf = ax.plot_surface(M1_grid, M2_grid, match_grid, cmap='viridis', linewidth=0, antialiased=True)
     ax.set_xlabel('Mass m1')
     ax.set_ylabel('Mass m2')
     ax.set_zlabel('Match')
-    ax.set_title('3D Surface: Masses vs Match')
-
+    ax.set_title('3D Surface: Masses vs Match (smooth)')
     fig.colorbar(surf, shrink=0.5, aspect=5)
-
     plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, "3d_match_surface.png"), dpi=150)
     plt.close()
@@ -417,7 +450,6 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
         origin='lower',
         cmap='viridis',
         aspect='auto',
-        interpolation='bilinear',  # smooth the image
     )
     plt.colorbar(im, label='Match Value')
     plt.xlabel('m1 [$M_\\odot$]')
@@ -428,6 +460,240 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     plt.savefig(output_path)
     plt.close()
     logger.info(f"Saved smooth heatmap to {output_path}")
+
+def _plot_overlay(h_true, h_pred, t, title, fname):
+    """
+    Overlay plots: strain, amplitude, phase, and *normalized* differences (0-1).
+    The differences are plotted as absolute residuals min-max normalized per-array to [0,1].
+    """
+    an_t = hilbert(h_true); A_t = np.abs(an_t); ph_t = np.unwrap(np.angle(an_t))
+    an_p = hilbert(h_pred); A_p = np.abs(an_p); ph_p = np.unwrap(np.angle(an_p))
+
+    # Raw differences
+    dh_raw = h_pred - h_true
+    dA_raw = A_p - A_t
+    dph_raw = ph_p - ph_t
+
+    # Convert to absolute residuals and normalize each to [0,1] (per-array)
+    def _norm01(x):
+        x = np.asarray(x, dtype=float)
+        x = np.abs(x)
+        amin = x.min()
+        amax = x.max()
+        if amax <= amin or np.isclose(amax, amin):
+            return np.zeros_like(x)
+        return (x - amin) / (amax - amin)
+
+    dh = _norm01(dh_raw)
+    dA = _norm01(dA_raw)
+    dph = _norm01(dph_raw)
+
+    fig, axs = plt.subplots(2, 2, figsize=(18, 10))
+    # Strain
+    ax = axs[0, 0]
+    ax.plot(t, h_true, label='True', linewidth=1)
+    ax.plot(t, h_pred, '--', label='Predicted', linewidth=1)
+    ax.set_title('Strain Comparison')
+    ax.set_ylabel('Strain')
+    ax.grid(True)
+    ax.legend()
+    # Amplitude
+    ax = axs[0, 1]
+    ax.plot(t, A_t, label='True Amp', linewidth=1)
+    ax.plot(t, A_p, '--', label='Pred Amp', linewidth=1)
+    ax.set_title('Amplitude Comparison')
+    ax.set_ylabel('Amplitude')
+    ax.grid(True)
+    ax.legend()
+    # Phase
+    ax = axs[1, 0]
+    ax.plot(t, ph_t, label='True Phase', linewidth=1)
+    ax.plot(t, ph_p, '--', label='Pred Phase', linewidth=1)
+    ax.set_title('Phase Comparison')
+    ax.set_xlabel('Normalized Time')
+    ax.set_ylabel('Phase (rad)')
+    ax.grid(True)
+    ax.legend()
+    # Normalized Differences (0-1)
+    ax = axs[1, 1]
+    ax.plot(t, dh, label='|d Strain| (norm 0-1)', linewidth=1)
+    ax.plot(t, dA, label='|d Amp| (norm 0-1)', linestyle='--', linewidth=1)
+    ax.plot(t, dph, label='|d Phase| (norm 0-1)', linestyle=':', linewidth=1)
+    ax.set_title('Normalized Differences (absolute, min-max -> 0..1)')
+    ax.set_xlabel('Normalized Time')
+    ax.set_ylabel('Normalized residual')
+    ax.grid(True)
+    ax.legend(loc='upper right', fontsize='small')
+
+    fig.suptitle(title, fontsize=14)
+    plt.tight_layout(rect=[0, 0.03, 1, 0.95])
+    plt.savefig(fname, dpi=200)
+    plt.close()
+
+def compare_surrogates_against_approximants(
+    approximants: Sequence[str],
+    surrogates: Dict[str, Any],
+    samples: int = 200,
+    batch_size: int = 128,
+    out_dir: str = "plots/approximant_benchmark",
+    use_tqdm: bool = True,
+):
+    """
+    Run match benchmarks for multiple approximants and surrogate predictors.
+
+    True amplitudes are un-normalized using unscale_target(..., amp_scale) so
+    amplitude plots compare true & predicted amplitudes on the same scale.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    results = {}
+
+    loop = tqdm(approximants, desc="approximants") if use_tqdm else approximants
+    for approx in loop:
+        dataset = generate_data(waveform=approx, samples=samples, clean=True)
+        L = dataset.time_unscaled.size
+        t_norm = dataset.t_norm_array if hasattr(dataset, "t_norm_array") else dataset.time_unscaled
+
+        # NOTE: keep the normalized amp matrix around; we'll unscale per-predictor
+        amps_norm = dataset.targets_A.reshape(samples, L)
+        phis = dataset.targets_phi.reshape(samples, L)
+        thetas = dataset.thetas[:samples]
+
+        results[approx] = {}
+        for name, predictor in surrogates.items():
+            # determine amp_scale to unscale true amplitudes
+            if hasattr(predictor, "amp_scale"):
+                amp_scale = predictor.amp_scale
+            else:
+                amp_scale = getattr(dataset, "amp_scale", 1.0)
+
+            # attempt vectorized unscale; fallback to per-sample
+            try:
+                amp_true_mat = unscale_target(amps_norm, amp_scale)
+                # ensure shape (samples, L)
+                amp_true_mat = np.asarray(amp_true_mat).reshape(samples, L)
+            except Exception:
+                amp_true_list = []
+                for i in range(samples):
+                    amp_true_list.append(np.asarray(unscale_target(amps_norm[i], amp_scale)).reshape(-1))
+                amp_true_mat = np.stack(amp_true_list, axis=0)
+
+            # construct true strains from unscaled amplitude & stored phases
+            h_true = amp_true_mat * np.cos(phis)
+
+            # --- Try batch_predict inline (no helper) ---
+            h_pred = None
+            if hasattr(predictor, "batch_predict"):
+                try:
+                    out = predictor.batch_predict(thetas, batch_size=batch_size)
+                    h_list = out[0] if isinstance(out, tuple) and len(out) >= 1 else out
+                    if isinstance(h_list, np.ndarray):
+                        h_pred = np.asarray(h_list)
+                    else:
+                        arrs = []
+                        for h in h_list:
+                            d = getattr(h, "data", None)
+                            arr = d if d is not None else h
+                            arrs.append(np.asarray(arr).reshape(-1))
+                        h_pred = np.stack(arrs, axis=0)
+                except Exception:
+                    h_pred = None
+
+            # --- Fall back to single predictions (direct calls) ---
+            if h_pred is None:
+                h_pred_list = []
+                rng = tqdm(range(samples), desc=f"{approx}:{name}", leave=False) if use_tqdm else range(samples)
+                for i in rng:
+                    theta = thetas[i]
+                    # If predictor has predict_debug, use it (amp & phase)
+                    if hasattr(predictor, "predict_debug"):
+                        t_pred, amp_pred, phi_pred = predictor.predict_debug(*theta)
+                        # amp_pred is assumed to be already in unscaled units (like your pred)
+                        h_i = np.asarray(amp_pred) * np.cos(np.asarray(phi_pred))
+                    else:
+                        out = predictor.predict(*theta)
+                        hs = out[0] if isinstance(out, tuple) and len(out) >= 1 else out
+                        d = getattr(hs, "data", None)
+                        arr = d if d is not None else hs
+                        h_i = np.asarray(arr).reshape(-1)
+                    h_pred_list.append(h_i)
+                h_pred = np.stack(h_pred_list, axis=0)
+
+            # --- Align lengths if needed ---
+            if h_pred.shape[0] != samples:
+                raise RuntimeError(f"Predictor '{name}' returned {h_pred.shape[0]} samples but expected {samples}")
+            if h_pred.shape[1] != L:
+                Lp = h_pred.shape[1]
+                if Lp > L:
+                    h_pred = h_pred[:, :L]
+                else:
+                    pad = np.zeros((samples, L - Lp))
+                    h_pred = np.concatenate([h_pred, pad], axis=1)
+
+            # --- Compute matches ---
+            matches = np.zeros(samples)
+            for i in range(samples):
+                matches[i] = compute_match(h_true[i], h_pred[i])[0]
+
+            results[approx][name] = matches
+
+            # --- Scatter plot ---
+            prefix = f"{approx}__{name}".replace("/", "_")
+            plt.figure(figsize=(10, 4))
+            plt.scatter(np.arange(samples), matches, s=12)
+            plt.xlabel("sample idx")
+            plt.ylabel("match")
+            plt.title(f"Match scatter — approximant={approx} predictor={name}")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, f"{prefix}_scatter.png"), dpi=150)
+            plt.close()
+
+            # --- Histogram w/ KDE ---
+            plt.figure(figsize=(8, 4))
+            plt.hist(matches, bins=30, density=True, alpha=0.6)
+            if len(matches) > 1:
+                kde = gaussian_kde(matches)
+                xs = np.linspace(np.min(matches), np.max(matches), 200)
+                plt.plot(xs, kde(xs), linewidth=2)
+            plt.title(f"Match histogram — {approx} / {name}")
+            plt.xlabel("match")
+            plt.grid(True)
+            plt.tight_layout()
+            plt.savefig(os.path.join(out_dir, f"{prefix}_hist.png"), dpi=150)
+            plt.close()
+
+            # --- Overlay plots (best & worst) with pretty-printed params in title ---
+            best_idx = int(np.argmax(matches))
+            worst_idx = int(np.argmin(matches))
+            for idx, label in [(best_idx, "best"), (worst_idx, "worst")]:
+                m1, m2, s1z, s2z, inc, ecc = map(float, thetas[idx])
+                params_str = f"m1={m1:.6g}, m2={m2:.6g}, s1z={s1z:.3f}, s2z={s2z:.3f}, inc={inc:.3f}, ecc={ecc:.3f}"
+                title = f"{approx} / {name} — {label} match={matches[idx]:.4f} | {params_str}"
+                fname = os.path.join(out_dir, f"{prefix}__{label}_overlay_idx{idx}.png")
+                _plot_overlay(h_true[idx], h_pred[idx], t_norm, title, fname)
+
+        # end predictor loop
+    # end approximant loop
+
+    # Build summary DataFrame
+    rows = []
+    for approx, d in results.items():
+        for name, arr in d.items():
+            rows.append({
+                "approximant": approx,
+                "predictor": name,
+                "mean": float(np.mean(arr)),
+                "std": float(np.std(arr)),
+                "min": float(np.min(arr)),
+                "25%": float(np.percentile(arr, 25)),
+                "50%": float(np.median(arr)),
+                "75%": float(np.percentile(arr, 75)),
+                "max": float(np.max(arr)),
+                "n": len(arr),
+            })
+    summary_df = pd.DataFrame(rows).set_index(["approximant", "predictor"]).sort_index()
+
+    return results, summary_df
 
 if __name__ == "__main__":
     # Logging
@@ -450,6 +716,15 @@ if __name__ == "__main__":
     matches = cross_correlation()
     generate_match_heatmap(40,110)
 
-#    notify_discord(
-#            f"Evaluation complete! cross correlation matches: {matches}\n"
-#    )
+    approximants = ["SEOBNRv4", "IMRPhenomD", "SEOBNRv4HM"]
+
+    surrogates = {
+        "IMR Model": WaveformPredictor("checkpoints", device=DEVICE),
+        "EOB model": WaveformPredictor("checkpoints", device=DEVICE),
+    }
+
+    results, summary_df = compare_surrogates_against_approximants(
+        approximants, surrogates, samples=10, batch_size=128, out_dir="plots/approximants"
+    )
+
+    print(summary_df)

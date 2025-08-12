@@ -26,7 +26,7 @@ DATA_PATH = 'dataset.pt'
 
 def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 1: training amplitude network")
-    optimizer = optim.Adam(amp_model.parameters(), lr=0.0004138040112561013)
+    optimizer = optim.Adam(amp_model.parameters(), lr=AMP_LR)
     scheduler = ReduceLROnPlateau(
         optimizer,
         mode="min",
@@ -43,35 +43,43 @@ def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPO
     for epoch in range(1, max_epochs + 1):
         # Train
         amp_model.train()
-        train_loss = 0.0; cnt = 0
+        train_loss = 0.0
+        cnt = 0
+
         for X, A in tqdm(loaders['amp']['train'], desc=f"E{epoch} AMP Train", leave=False):
             X, A = X.to(DEVICE), A.to(DEVICE)
             t_norm, theta = X[:,:1], X[:,1:]
             A_pred = amp_model(t_norm, theta)
             loss = criterion(A_pred, A)
-            optimizer.zero_grad(); loss.backward()
-            nn.utils.clip_grad_norm_(amp_model.parameters(), GRADIENT_CLIP)
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(amp_model.parameters(), AMP_CLIP)
             optimizer.step()
             bs = X.size(0)
-            train_loss += loss.item()*bs; cnt += bs
+            train_loss += loss.item()*bs
+            cnt += bs
         train_loss /= cnt
 
         # Validate
         amp_model.eval()
-        val_loss = 0.0; cnt = 0
+        val_loss = 0.0
+        cnt = 0
+
         with torch.no_grad():
             for X, A in loaders['amp']['val']:
                 X, A = X.to(DEVICE), A.to(DEVICE)
                 t_norm, theta = X[:,:1], X[:,1:]
                 loss = criterion(amp_model(t_norm, theta), A)
                 bs = X.size(0)
-                val_loss += loss.item()*bs; cnt += bs
+                val_loss += loss.item()*bs
+                cnt += bs
         val_loss /= cnt
         scheduler.step(val_loss)
 
         # Checkpoint / early stop
         if val_loss < best_val - MIN_DELTA:
-            best_val = val_loss; wait = 0
+            best_val = val_loss
+            wait = 0
             best_state = amp_model.state_dict()
             torch.save(best_state, os.path.join(checkpoint_dir, "amp_best.pt"))
             logger.info(f"Epoch {epoch}: AMP val improved to {val_loss:.3e}")
@@ -92,7 +100,7 @@ def train_amp_only(amp_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPO
 
 def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM_EPOCHS):
     logger.info("Stage 2: training phase network only")
-    optimizer = optim.Adam(phase_model.parameters(), lr=0.0007234279845665417)
+    optimizer = optim.Adam(phase_model.parameters(), lr=PHASE_LR)
     scheduler = ReduceLROnPlateau(
         optimizer, mode="min",
         factor=float(SCHEDULER_CFG.lr_decay_factor),
@@ -107,35 +115,43 @@ def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM
     for epoch in range(1, max_epochs + 1):
         # Train
         phase_model.train()
-        train_loss = 0.0; cnt = 0
+        train_loss = 0.0
+        cnt = 0
+
         for X, phi in tqdm(loaders['phase']['train'], desc=f"E{epoch} PHASE Train", leave=False):
             X, phi = X.to(DEVICE), phi.to(DEVICE)
             t_norm, theta = X[:, :1], X[:, 1:]
             phi_pred = phase_model(t_norm, theta)
             loss = criterion(phi_pred, phi)
-            optimizer.zero_grad(); loss.backward()
-            nn.utils.clip_grad_norm_(phase_model.parameters(), GRADIENT_CLIP)
+            optimizer.zero_grad()
+            loss.backward()
+            nn.utils.clip_grad_norm_(phase_model.parameters(), PHASE_CLIP)
             optimizer.step()
             bs = X.size(0)
-            train_loss += loss.item()*bs; cnt += bs
+            train_loss += loss.item()*bs
+            cnt += bs
         train_loss /= cnt
 
         # Validate
         phase_model.eval()
-        val_loss = 0.0; cnt = 0
+        val_loss = 0.0
+        cnt = 0
+
         with torch.no_grad():
             for X, phi in loaders['phase']['val']:
                 X, phi = X.to(DEVICE), phi.to(DEVICE)
                 t_norm, theta = X[:, :1], X[:, 1:]
                 loss = criterion(phase_model(t_norm, theta), phi)
                 bs = X.size(0)
-                val_loss += loss.item()*bs; cnt += bs
+                val_loss += loss.item()*bs
+                cnt += bs
         val_loss /= cnt
         scheduler.step(val_loss)
 
         # Checkpoint / early stop
         if val_loss < best_val - MIN_DELTA:
-            best_val = val_loss; wait = 0
+            best_val = val_loss
+            wait = 0
             best_state = phase_model.state_dict()
             torch.save(best_state, os.path.join(checkpoint_dir, "phase_best.pt"))
             logger.info(f"Epoch {epoch}: PHASE val improved to {val_loss:.3e}")
@@ -152,7 +168,6 @@ def train_phase_only(phase_model, loaders, checkpoint_dir, max_epochs: int = NUM
         phase_model.load_state_dict(best_state)
         logger.info("Restored PHASE best model")
     return phase_model
-
 
 def train_and_save(checkpoint_dir: str = "checkpoints"):
     with PowerMonitor(interval=1.0) as power:
@@ -233,6 +248,7 @@ if __name__ == "__main__":
         ]
     )
 
+    logger.info(f"Using {WAVEFORM} approximant...")
     train_and_save(CHECKPOINT_DIR)
 #    notify_discord("3‑stage training complete!")
 

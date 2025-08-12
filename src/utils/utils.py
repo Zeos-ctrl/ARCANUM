@@ -135,7 +135,6 @@ def compute_last_layer_hessian_diag(
 
     return weight_variances, bias_variance
 
-
 def compute_match(h_true, h_pred):
     ht = h_true - h_true.mean()
     hp = h_pred - h_pred.mean()
