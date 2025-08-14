@@ -4,8 +4,8 @@ from src.data.dataset import generate_data
 from src.data.config import WAVEFORM_LENGTH, NUM_SAMPLES, TRAIN_FEATURES
 
 def test_generate_data_shapes():
-    dataset = generate_data()
-    S, L = NUM_SAMPLES, WAVEFORM_LENGTH
+    dataset = generate_data(samples=10)
+    S, L = 10, WAVEFORM_LENGTH
     assert dataset.inputs.shape == (S * L, len(TRAIN_FEATURES) + 1), "Incorrect input shape."
     assert dataset.targets_A.shape == (S * L, 1), "Incorrect amplitude target shape."
     assert dataset.targets_phi.shape == (S * L, 1), "Incorrect phase target shape."

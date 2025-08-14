@@ -11,6 +11,7 @@ from scipy.stats import gaussian_kde
 
 # PyCBC waveform
 from pycbc.waveform import get_td_waveform
+from pycbc.psd import aLIGOZeroDetHighPower
 
 # Libraries
 from src.data.config import *
@@ -24,6 +25,13 @@ import pandas as pd
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
+
+# Get model
+try:
+    wf = str(WAVEFORM).lower()
+    MODEL = "EOB" if wf == "seobnrv4" else "IMR_NS"
+except Exception:
+    MODEL = "IMR_NS"
 
 def pi_formatter(x, pos):
     """Format multiples of pi nicely."""
@@ -46,7 +54,7 @@ def pi_formatter(x, pos):
 
 def evaluate():
     logger.info("Starting single‐waveform evaluation and visualization…")
-    pred = WaveformPredictor("checkpoints", device=DEVICE)
+    pred = WaveformPredictor("checkpoints", model=MODEL, device=DEVICE)
     data = generate_data(samples=10)
 
     i = np.random.randint(0, 10)
@@ -63,7 +71,12 @@ def evaluate():
     # model prediction
     t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, chi1z, chi2z, incl, ecc)
     h_pred      = amp_pred * np.cos(phi_pred)
-    match, _ = compute_match(h_true, h_pred)
+
+    flen = L // 2 + 1
+    df = 1.0 / (L * DELTA_T)
+    psd_vals = np.asarray(aLIGOZeroDetHighPower(flen, df, 20.0), dtype=float)
+
+    match = compute_match(h_true, h_pred, DELTA_T)
 
     # wrapped phase and residuals
     phi_wr_true = np.mod(phi_true, 2*np.pi)
@@ -161,7 +174,7 @@ def evaluate():
         output_path="plots/prediction_uncertainty.png"
     )
 
-def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
+def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE):
     """
     Generate 'samples' waveforms, predict them, compute per-pair cross-correlation (true[i] vs pred[i]),
     and plot:
@@ -178,7 +191,7 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
 
     # Load data and model
     data = generate_data(samples=samples)
-    pred = WaveformPredictor(checkpoint_dir, device=device)
+    pred = WaveformPredictor(checkpoint_dir, model=MODEL, device=device)
 
     thetas = data.thetas
     L = data.time_unscaled.size
@@ -187,6 +200,11 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
     h_trues, h_preds, t_norms = [], [], []
     qs, m1s, m2s = [], [] ,[]
     matches = np.zeros(samples)
+
+    # Psd stuff
+    flen = L // 2 + 1
+    df = 1.0 / (L * DELTA_T)
+    psd_vals = np.asarray(aLIGOZeroDetHighPower(flen, df, 20.0), dtype=float)
 
     # Helper: normalize absolute residuals to [0,1] per-array
     def _norm01_abs(x):
@@ -213,7 +231,7 @@ def cross_correlation(samples=10, checkpoint_dir="checkpoints", device=DEVICE):
         h_pred = amp_pred * np.cos(phi_pred)
 
         # Compute match
-        match_val, _ = compute_match(h_true, h_pred)
+        match_val = compute_match(h_true, h_pred, DELTA_T)
 
         # Store
         h_trues.append(h_true)
@@ -406,7 +424,12 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     m2_vals = np.arange(MASS_MIN, MASS_MAX + step, step)
 
     pts_m1, pts_m2, pts_match = [], [], []
-    pred = WaveformPredictor("checkpoints", device=DEVICE)
+    pred = WaveformPredictor("checkpoints", model=MODEL, device=DEVICE)
+
+    # Psd stuff
+    flen = WAVEFORM_LENGTH // 2 + 1
+    df = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
+    psd_vals = np.asarray(aLIGOZeroDetHighPower(flen, df, 20.0), dtype=float)
 
     # compute matches at coarse points
     for m1 in m1_vals:
@@ -423,7 +446,7 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
             )
             hp_pred = np.asarray(hp_p.data[-int(WAVEFORM_LENGTH/DELTA_T):])
 
-            match_val, _ = compute_match(hp_true, hp_pred)
+            match_val = compute_match(hp_true, hp_pred, DELTA_T)
             pts_m1.append(m1)
             pts_m2.append(m2)
             pts_match.append(match_val)
@@ -541,141 +564,139 @@ def compare_surrogates_against_approximants(
     """
     Run match benchmarks for multiple approximants and surrogate predictors.
 
-    True amplitudes are un-normalized using unscale_target(..., amp_scale) so
-    amplitude plots compare true & predicted amplitudes on the same scale.
+    Plots:
+      - Scatter plots of matches
+      - Density plots (histogram + KDE) with 1σ, 2σ, 3σ vertical lines
+      - Best & worst overlays (absolute residuals normalized 0-1)
+    Stored in: plots/approximant_benchmark/<approximant>/<predictor>/
     """
-    os.makedirs(out_dir, exist_ok=True)
     results = {}
 
     loop = tqdm(approximants, desc="approximants") if use_tqdm else approximants
+
+    # PSD for match computation
+    flen = WAVEFORM_LENGTH // 2 + 1
+    df = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
+    psd_vals = np.asarray(aLIGOZeroDetHighPower(flen, df, 20.0), dtype=float)
+
     for approx in loop:
         dataset = generate_data(waveform=approx, samples=samples, clean=True)
         L = dataset.time_unscaled.size
-        t_norm = dataset.t_norm_array if hasattr(dataset, "t_norm_array") else dataset.time_unscaled
+        t_norm = getattr(dataset, "t_norm_array", dataset.time_unscaled)
 
-        # NOTE: keep the normalized amp matrix around; we'll unscale per-predictor
         amps_norm = dataset.targets_A.reshape(samples, L)
         phis = dataset.targets_phi.reshape(samples, L)
         thetas = dataset.thetas[:samples]
 
         results[approx] = {}
+
         for name, predictor in surrogates.items():
-            # determine amp_scale to unscale true amplitudes
-            if hasattr(predictor, "amp_scale"):
-                amp_scale = predictor.amp_scale
-            else:
-                amp_scale = getattr(dataset, "amp_scale", 1.0)
+            # Create per-comparison output dir
+            comp_dir = os.path.join(out_dir, approx, name)
+            os.makedirs(comp_dir, exist_ok=True)
 
-            # attempt vectorized unscale; fallback to per-sample
+            # Determine amplitude scale
+            amp_scale = getattr(predictor, "amp_scale", getattr(dataset, "amp_scale", 1.0))
+
+            # Unscale amplitude
             try:
-                amp_true_mat = unscale_target(amps_norm, amp_scale)
-                # ensure shape (samples, L)
-                amp_true_mat = np.asarray(amp_true_mat).reshape(samples, L)
+                amp_true_mat = np.asarray(unscale_target(amps_norm, amp_scale)).reshape(samples, L)
             except Exception:
-                amp_true_list = []
-                for i in range(samples):
-                    amp_true_list.append(np.asarray(unscale_target(amps_norm[i], amp_scale)).reshape(-1))
-                amp_true_mat = np.stack(amp_true_list, axis=0)
+                amp_true_mat = np.stack([
+                    np.asarray(unscale_target(amps_norm[i], amp_scale)).reshape(-1)
+                    for i in range(samples)
+                ], axis=0)
 
-            # construct true strains from unscaled amplitude & stored phases
+            # Construct true strain
             h_true = amp_true_mat * np.cos(phis)
 
-            # --- Try batch_predict inline (no helper) ---
+            # Predict strain
             h_pred = None
             if hasattr(predictor, "batch_predict"):
                 try:
                     out = predictor.batch_predict(thetas, batch_size=batch_size)
-                    h_list = out[0] if isinstance(out, tuple) and len(out) >= 1 else out
+                    h_list = out[0] if isinstance(out, tuple) else out
                     if isinstance(h_list, np.ndarray):
-                        h_pred = np.asarray(h_list)
+                        h_pred = h_list
                     else:
-                        arrs = []
-                        for h in h_list:
-                            d = getattr(h, "data", None)
-                            arr = d if d is not None else h
-                            arrs.append(np.asarray(arr).reshape(-1))
-                        h_pred = np.stack(arrs, axis=0)
+                        h_pred = np.stack([
+                            np.asarray(getattr(h, "data", h)).reshape(-1) for h in h_list
+                        ], axis=0)
                 except Exception:
-                    h_pred = None
+                    pass
 
-            # --- Fall back to single predictions (direct calls) ---
             if h_pred is None:
-                h_pred_list = []
+                h_pred = []
                 rng = tqdm(range(samples), desc=f"{approx}:{name}", leave=False) if use_tqdm else range(samples)
                 for i in rng:
                     theta = thetas[i]
-                    # If predictor has predict_debug, use it (amp & phase)
                     if hasattr(predictor, "predict_debug"):
-                        t_pred, amp_pred, phi_pred = predictor.predict_debug(*theta)
-                        # amp_pred is assumed to be already in unscaled units (like your pred)
+                        _, amp_pred, phi_pred = predictor.predict_debug(*theta)
                         h_i = np.asarray(amp_pred) * np.cos(np.asarray(phi_pred))
                     else:
                         out = predictor.predict(*theta)
-                        hs = out[0] if isinstance(out, tuple) and len(out) >= 1 else out
-                        d = getattr(hs, "data", None)
-                        arr = d if d is not None else hs
-                        h_i = np.asarray(arr).reshape(-1)
-                    h_pred_list.append(h_i)
-                h_pred = np.stack(h_pred_list, axis=0)
+                        hs = out[0] if isinstance(out, tuple) else out
+                        h_i = np.asarray(getattr(hs, "data", hs)).reshape(-1)
+                    h_pred.append(h_i)
+                h_pred = np.stack(h_pred, axis=0)
 
-            # --- Align lengths if needed ---
-            if h_pred.shape[0] != samples:
-                raise RuntimeError(f"Predictor '{name}' returned {h_pred.shape[0]} samples but expected {samples}")
+            # Align lengths
             if h_pred.shape[1] != L:
-                Lp = h_pred.shape[1]
-                if Lp > L:
+                if h_pred.shape[1] > L:
                     h_pred = h_pred[:, :L]
                 else:
-                    pad = np.zeros((samples, L - Lp))
+                    pad = np.zeros((samples, L - h_pred.shape[1]))
                     h_pred = np.concatenate([h_pred, pad], axis=1)
 
-            # --- Compute matches ---
-            matches = np.zeros(samples)
-            for i in range(samples):
-                matches[i] = compute_match(h_true[i], h_pred[i])[0]
-
+            # Compute matches
+            matches = np.array([compute_match(h_true[i], h_pred[i], DELTA_T) for i in range(samples)])
             results[approx][name] = matches
 
-            # --- Scatter plot ---
-            prefix = f"{approx}__{name}".replace("/", "_")
+            # Scatter plot
             plt.figure(figsize=(10, 4))
             plt.scatter(np.arange(samples), matches, s=12)
-            plt.xlabel("sample idx")
-            plt.ylabel("match")
-            plt.title(f"Match scatter — approximant={approx} predictor={name}")
+            plt.xlabel("Sample idx")
+            plt.ylabel("Match")
+            plt.title(f"{approx} / {name} — Match Scatter")
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(os.path.join(out_dir, f"{prefix}_scatter.png"), dpi=150)
+            plt.savefig(os.path.join(comp_dir, "match_scatter.png"), dpi=150)
             plt.close()
 
-            # --- Histogram w/ KDE ---
+            # Density plot with 1σ, 2σ, 3σ lines
+            mean_val = np.mean(matches)
+            std_val = np.std(matches)
             plt.figure(figsize=(8, 4))
-            plt.hist(matches, bins=30, density=True, alpha=0.6)
+            plt.hist(matches, bins=30, density=True, alpha=0.6, label="Histogram")
             if len(matches) > 1:
                 kde = gaussian_kde(matches)
-                xs = np.linspace(np.min(matches), np.max(matches), 200)
-                plt.plot(xs, kde(xs), linewidth=2)
-            plt.title(f"Match histogram — {approx} / {name}")
-            plt.xlabel("match")
+                xs = np.linspace(np.min(matches), np.max(matches), 500)
+                plt.plot(xs, kde(xs), linewidth=2, label="KDE")
+            for n in [1, 2, 3]:
+                plt.axvline(mean_val + n * std_val, color="r", linestyle=":", linewidth=1,
+                            label=f"+{n}σ" if n == 1 else None)
+                plt.axvline(mean_val - n * std_val, color="r", linestyle=":", linewidth=1)
+            plt.axvline(mean_val, color="k", linestyle="--", linewidth=1, label="Mean")
+            plt.title(f"{approx} / {name} — Match Distribution")
+            plt.xlabel("Match")
+            plt.ylabel("Density")
             plt.grid(True)
+            plt.legend()
             plt.tight_layout()
-            plt.savefig(os.path.join(out_dir, f"{prefix}_hist.png"), dpi=150)
+            plt.savefig(os.path.join(comp_dir, "match_density.png"), dpi=150)
             plt.close()
 
-            # --- Overlay plots (best & worst) with pretty-printed params in title ---
+            # Best & worst overlays
             best_idx = int(np.argmax(matches))
             worst_idx = int(np.argmin(matches))
             for idx, label in [(best_idx, "best"), (worst_idx, "worst")]:
                 m1, m2, s1z, s2z, inc, ecc = map(float, thetas[idx])
                 params_str = f"m1={m1:.6g}, m2={m2:.6g}, s1z={s1z:.3f}, s2z={s2z:.3f}, inc={inc:.3f}, ecc={ecc:.3f}"
                 title = f"{approx} / {name} — {label} match={matches[idx]:.4f} | {params_str}"
-                fname = os.path.join(out_dir, f"{prefix}__{label}_overlay_idx{idx}.png")
+                fname = os.path.join(comp_dir, f"{label}_overlay_idx{idx}.png")
                 _plot_overlay(h_true[idx], h_pred[idx], t_norm, title, fname)
 
-        # end predictor loop
-    # end approximant loop
-
-    # Build summary DataFrame
+    # Summary DataFrame
     rows = []
     for approx, d in results.items():
         for name, arr in d.items():
@@ -713,18 +734,19 @@ if __name__ == "__main__":
     logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
 
     evaluate()
+
     matches = cross_correlation()
-    generate_match_heatmap(40,110)
 
-    approximants = ["SEOBNRv4", "IMRPhenomD", "SEOBNRv4HM"]
+    generate_match_heatmap(25,125)
 
+    approximants = ["SEOBNRv4", "IMRPhenomD", "SEOBNRv4HM", "IMRPhenomXHM"]
     surrogates = {
-        "IMR Model": WaveformPredictor("checkpoints", device=DEVICE),
-        "EOB model": WaveformPredictor("checkpoints", device=DEVICE),
+        "IMR Model": WaveformPredictor("checkpoints", model="IMR", device=DEVICE),
+        "EOB model": WaveformPredictor("checkpoints", model="EOB", device=DEVICE),
     }
 
     results, summary_df = compare_surrogates_against_approximants(
-        approximants, surrogates, samples=10, batch_size=128, out_dir="plots/approximants"
+        approximants, surrogates, samples=1000, batch_size=128, out_dir="plots/approximants"
     )
 
     print(summary_df)

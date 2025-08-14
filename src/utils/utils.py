@@ -5,20 +5,22 @@ import logging
 import requests
 import numpy as np
 import torch.nn as nn
-from typing import Optional, Tuple, List
+from numpy.fft import rfft, rfftfreq
 from dataclasses import dataclass
+from typing import Optional, Tuple, List
+from pycbc.psd import aLIGOZeroDetHighPower
 from torch.utils.data import DataLoader, TensorDataset
 
-from src.models.model_factory import make_amp_model, make_phase_model
 from src.data.config import *
 from src.data.dataset import unscale_target
+from src.models.model_factory import make_amp_model, make_phase_model
 
 logger = logging.getLogger(__name__)
 
 def save_checkpoint(checkpoint_dir, amp_model, phase_model, data,
                     amp_weight_var, amp_bias_var,
                     phase_weight_var, phase_bias_var,
-                    noise_variance):
+                    noise_variance, model_params):
     """
     Save important model information
     """
@@ -135,20 +137,27 @@ def compute_last_layer_hessian_diag(
 
     return weight_variances, bias_variance
 
-def compute_match(h_true, h_pred):
-    ht = h_true - h_true.mean()
-    hp = h_pred - h_pred.mean()
-    nt = np.linalg.norm(ht)
-    np_ = np.linalg.norm(hp)
-    if nt == 0 or np_ == 0:
-        return 0.0, 0
-    ht /= nt
-    hp /= np_
-    corr = np.correlate(ht, hp, mode="full")
-    idx = corr.argmax()
-    match = corr[idx]
-    lag = idx - (len(ht) - 1)
-    return match, lag
+def compute_match(h1, h2, dt, f_low=20.0):
+    from pycbc.types import TimeSeries
+    from pycbc.filter import match
+    h1 = np.asarray(h1, dtype=np.float64)
+    h2 = np.asarray(h2, dtype=np.float64)
+
+    h1_ts = TimeSeries(h1, delta_t=dt)
+    h2_ts = TimeSeries(h2, delta_t=dt)
+    
+    # Match length
+    tlen = max(len(h1_ts), len(h2_ts))
+    h1_ts.resize(tlen)
+    h2_ts.resize(tlen)
+    
+    # PSD
+    delta_f = 1.0 / h1_ts.duration
+    flen = tlen//2 + 1
+    psd = aLIGOZeroDetHighPower(flen, delta_f, f_low).astype(np.float64)
+    
+    m, _ = match(h1_ts, h2_ts, psd=psd, low_frequency_cutoff=f_low)
+    return m
 
 @dataclass
 class TimeSeriesStrainData:
@@ -160,22 +169,34 @@ class TimeSeriesStrainData:
     approximant: str        # approximant used in training
 
 class WaveformPredictor:
-    def __init__(self, checkpoint_dir: str, device: str = DEVICE):
+    def __init__(self, checkpoint_dir: str, model: str, device: str = DEVICE):
         self.logger = logging.getLogger(self.__class__.__name__)
         self.logger.info(f"Initializing WaveformPredictor from '{checkpoint_dir}'")
         self.device = torch.device(device)
 
         # Load normalization statistics
-        self.param_means = np.load(os.path.join(checkpoint_dir, "param_means.npy"))
-        self.param_stds = np.load(os.path.join(checkpoint_dir, "param_stds.npy"))
-        self.time_norm_array = np.load(os.path.join(checkpoint_dir, "t_norm_array.npy"))
+        self.param_means = np.load(os.path.join(checkpoint_dir, model, "param_means.npy"))
+        self.param_stds = np.load(os.path.join(checkpoint_dir, model, "param_stds.npy"))
+        self.time_norm_array = np.load(os.path.join(checkpoint_dir, model, "t_norm_array.npy"))
 
         # Load metadata
-        meta_path = os.path.join(checkpoint_dir, "meta.json")
+        meta_path = os.path.join(checkpoint_dir, model, "meta.json")
         if not os.path.exists(meta_path):
             raise FileNotFoundError(f"No meta.json in {checkpoint_dir}")
         with open(meta_path) as meta_file:
             meta = json.load(meta_file)
+
+        amp_path = os.path.join(checkpoint_dir, model, "amp_params.json")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"No amp_params.json in {checkpoint_dir}{model}")
+        with open(amp_path) as meta_file:
+            amp_params = json.load(meta_file)
+
+        phase_path = os.path.join(checkpoint_dir, model, "phase_params.json")
+        if not os.path.exists(meta_path):
+            raise FileNotFoundError(f"No phase_params.json in {checkpoint_dir}{model}")
+        with open(phase_path) as meta_file:
+            phase_params = json.load(meta_file)
 
         self.amp_scale = meta["amp_scale"]
         self.waveform_length = int(meta["waveform_length"])
@@ -184,19 +205,19 @@ class WaveformPredictor:
 
         # Build and load models
         feature_dim = len(TRAIN_FEATURES)
-        self.amp_model = make_amp_model(in_param_dim=feature_dim).to(self.device)
-        self.phase_model = make_phase_model(param_dim=feature_dim).to(self.device)
+        self.amp_model = make_amp_model(in_param_dim=feature_dim, params=amp_params).to(self.device)
+        self.phase_model = make_phase_model(param_dim=feature_dim, params=phase_params).to(self.device)
         self.amp_model.load_state_dict(
-            torch.load(os.path.join(checkpoint_dir, "amp_model.pt"), map_location=self.device)
+            torch.load(os.path.join(checkpoint_dir, model, "amp_model.pt"), map_location=self.device)
         )
         self.phase_model.load_state_dict(
-            torch.load(os.path.join(checkpoint_dir, "phase_model.pt"), map_location=self.device)
+            torch.load(os.path.join(checkpoint_dir, model, "phase_model.pt"), map_location=self.device)
         )
 
         # Load Laplace variances
         def load_variance_file(filename: str) -> torch.Tensor:
             return torch.from_numpy(
-                np.load(os.path.join(checkpoint_dir, filename))
+                np.load(os.path.join(checkpoint_dir, model, filename))
             ).to(self.device)
 
         self.amp_last_weight_variances = load_variance_file("amp_last_weight_variances.npy")
@@ -206,6 +227,7 @@ class WaveformPredictor:
 
         self.amp_model.eval()
         self.phase_model.eval()
+        self.logger.info(f"Using {self.device}...")
         self.logger.info("Models and variances loaded; in eval mode.")
 
     def _compute_derived(self, m1: float, m2: float, chi1z: float, chi2z: float, inclination: float, eccentricity: float) -> np.ndarray:

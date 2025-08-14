@@ -230,8 +230,7 @@ def train_and_eval_phase(
 
 # Optuna objectives
 def objective_amp(trial):
-    #lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    lr = 0.0009
+    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     amp_size   = trial.suggest_categorical("amp_hidden_size", [64, 128, 256, 512])
     banks      = trial.suggest_int("banks", 1, 6)
     dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)
@@ -257,8 +256,7 @@ def objective_amp(trial):
 
 
 def objective_phase(trial):
-    #lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
-    lr = 0.0009
+    lr         = trial.suggest_float("learning_rate", 1e-5, 1e-3, log=True)
     phase_size = trial.suggest_categorical("phase_hidden_size", [64, 128, 256, 512])
     banks      = trial.suggest_int("banks", 1, 6)
     dropout    = trial.suggest_float("dropout", 0.0, 0.5, step=0.05)
