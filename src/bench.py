@@ -10,7 +10,7 @@ import matplotlib.pyplot as plt
 
 import torch
 
-from src.data.config import DEVICE, WAVEFORM
+from src.data.config import DEVICE, WAVEFORM, DELTA_T
 from src.data.dataset import sample_parameters, generate_data
 from src.utils.utils import compute_match, WaveformPredictor, notify_discord
 
@@ -30,6 +30,13 @@ import plotly.graph_objects as go
 from scipy.stats import gaussian_kde
 
 logger = logging.getLogger(__name__)
+
+# Get model
+try:
+    wf = str(WAVEFORM).lower()
+    MODEL = "EOB" if wf == "seobnrv4" else "IMR_NS"
+except Exception:
+    MODEL = "IMR_NS"
 
 def benchmark(sample_counts, predictor: WaveformPredictor):
     """
@@ -84,11 +91,11 @@ def benchmark(sample_counts, predictor: WaveformPredictor):
 
         # 4) Compute matches
         matches_single = [
-            compute_match(h_true[i], h_pred_single[i])[0]
+            compute_match(h_true[i], h_pred_single[i], dt=DELTA_T)
             for i in range(n)
         ]
         matches_batch = [
-            compute_match(h_true[i], h_pred_batch[i])[0]
+            compute_match(h_true[i], h_pred_batch[i], dt=DELTA_T)
             for i in range(n)
         ]
 
@@ -160,7 +167,7 @@ if __name__ == "__main__":
     logger.info(f"Using {WAVEFORM} approximant...")
 
     # Instantiate predictor once
-    predictor = WaveformPredictor("checkpoints", device=DEVICE)
+    predictor = WaveformPredictor("checkpoints", model=MODEL, device=DEVICE)
     sample_counts = [10,100,1000,10000]
 
     # Run benchmark

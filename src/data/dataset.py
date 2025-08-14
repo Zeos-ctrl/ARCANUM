@@ -7,7 +7,7 @@ from scipy.stats import qmc
 from scipy.signal import hilbert
 from dataclasses import dataclass
 from scipy.signal.windows import tukey
-from scipy.fft import fft, ifft
+from scipy.fft import fft, ifft, rfft
 from scipy.interpolate import interp1d
 from torch.utils.data import DataLoader, TensorDataset
 from sklearn.model_selection import train_test_split
@@ -127,10 +127,9 @@ def make_waveform(theta, waveform=WAVEFORM):
 
 def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     """
-    Generate a noisy waveform of exactly WAVEFORM_LENGTH samples,
-    trimmed & resampled to eliminate zero padding artifacts.
+    Generates waveform, whitens/scales, adds noise built from the one-sided PSD,
+    then trims & resamples to WAVEFORM_LENGTH (assumes helper _resample_and_fill exists).
     """
-    # 1) raw clean waveform (un‐padded)
     m1, m2, chi1z, chi2z, incl, ecc = theta
     hp, _ = get_td_waveform(
         mass1=m1, mass2=m2,
@@ -140,24 +139,43 @@ def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
         approximant=WAVEFORM
     )
     h_clean = hp.numpy()
+    N = len(h_clean)
 
-    # whiten & scale to target SNR  
-    Hf      = fft(h_clean)
-    sqrt_psd = np.sqrt(psd_arr) + 1e-30
+    # Work in rfft-space (one-sided) so shape = N//2 + 1
+    Hf = rfft(h_clean)
+    flen = Hf.shape[0]
+
+    psd_arr = np.asarray(psd_arr, dtype=float)
+
+    # Convert psd_arr to one-sided PSD of length flen if needed
+    if psd_arr.shape[0] == flen:
+        psd_one_sided = psd_arr
+    elif psd_arr.shape[0] == N:
+        psd_one_sided = psd_arr[:flen]
+    else:
+        raise ValueError(
+            f"psd_arr length {psd_arr.shape[0]} is incompatible with waveform length N={N}; "
+            f"expected {flen} (one-sided) or {N} (two-sided)."
+        )
+
+    # ensure non-zero positive PSD entries
+    psd_one_sided = np.where(psd_one_sided <= 0.0, np.inf, psd_one_sided)
+    sqrt_psd = np.sqrt(psd_one_sided) + 1e-30
+
+    # whiten in frequency domain and return to time domain
     Hf_white = Hf / sqrt_psd
-    h_white  = np.real(ifft(Hf_white))
+    h_white = np.real(irfft(Hf_white, n=N))
 
+    # compute SNR of clean whitened signal and scale
     rho_clean = np.sqrt(np.sum(h_white**2) * DELTA_T)
-    scale     = (snr_target / rho_clean) if rho_clean > 0 else 1.0
-    h_scaled  = h_clean * scale
+    scale = (snr_target / rho_clean) if rho_clean > 0 else 1.0
+    h_scaled = h_clean * scale
 
-    # add noise
-    noise_td = noise.noise_from_psd(
-        len(h_scaled), DELTA_T, psd_arr, seed=seed
-    ).numpy()
+    # noise_from_psd expects one-sided PSD (length N//2 + 1)
+    noise_td = noise.noise_from_psd(N, DELTA_T, psd_one_sided, seed=seed).numpy()
     h_noisy = h_scaled + noise_td
 
-    # trim & resample
+    # trim & resample to target length
     return _resample_and_fill(h_noisy, WAVEFORM_LENGTH)
 
 def compute_global_scale(inst_target: np.ndarray, target_peak: float = 1.0) -> float:
