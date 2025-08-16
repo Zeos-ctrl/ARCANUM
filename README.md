@@ -71,5 +71,5 @@ optuna-dashboard sqlite:///optuna_study.db --host 0.0.0.0 --port 8080
 
 ## Issues
 
-If you have any bugs or issues open a pull request and a moderator will take a 
+If you have any bugs or issues open a pull request and a moderator will take a
 look.

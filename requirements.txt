@@ -1,15 +1,15 @@
 --extra-index-url https://download.pytorch.org/whl/cu128
-
-torch
-torchvision
-torchaudio
+matplotlib>=3.7
+numpy>=1.24
 
 pandas>=2.3.0
-numpy>=1.24
-scipy>=1.10
-scikit-learn>=1.2
-pyyaml>=6.0
-pytest>=8.4.0
 pycbc
+pytest>=8.4.0
+pyyaml>=6.0
+scikit-learn>=1.2
+scipy>=1.10
+
+torch
+torchaudio
+torchvision
 tqdm>=4.64
-matplotlib>=3.7
