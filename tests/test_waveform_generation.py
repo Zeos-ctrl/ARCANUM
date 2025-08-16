@@ -20,3 +20,4 @@ def test_make_noisy_waveform_reproducibility():
     h2 = make_noisy_waveform(theta, psd, seed=42, snr_target=0)
     assert np.allclose(h1, h2), "Noise generation is not reproducible with same seed."
 """
+from __future__ import annotations

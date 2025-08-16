@@ -1,37 +1,44 @@
 # General utils
-import os
+from __future__ import annotations
+
 import logging
-import numpy as np
-import matplotlib.pyplot as plt
-from scipy.signal import hilbert
-from scipy.interpolate import griddata
-from mpl_toolkits.mplot3d import Axes3D
-import matplotlib.ticker as mticker
-from scipy.stats import gaussian_kde
-
-# PyCBC waveform
-from pycbc.waveform import get_td_waveform
-from pycbc.psd import aLIGOZeroDetHighPower
-
-# Libraries
-from src.data.config import *
-from src.data.dataset import generate_data, make_waveform
-from src.utils.utils import compute_match, WaveformPredictor, notify_discord
-from src.data.dataset import unscale_target
-
+import os
 import time
-from typing import Sequence, Dict, Any
+from collections.abc import Sequence
+from typing import Any
+from typing import Dict
+
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mticker
+import numpy as np
 import pandas as pd
+from mpl_toolkits.mplot3d import Axes3D
+from pycbc.psd import aLIGOZeroDetHighPower
+from pycbc.waveform import get_td_waveform
+from scipy.interpolate import griddata
+from scipy.signal import hilbert
+from scipy.stats import gaussian_kde
 from tqdm import tqdm
+
+from src.data.config import *
+from src.data.dataset import generate_data
+from src.data.dataset import make_waveform
+from src.data.dataset import unscale_target
+from src.utils.utils import compute_match
+from src.utils.utils import notify_discord
+from src.utils.utils import WaveformPredictor
+# PyCBC waveform
+# Libraries
 
 logger = logging.getLogger(__name__)
 
 # Get model
 try:
     wf = str(WAVEFORM).lower()
-    MODEL = "EOB" if wf == "seobnrv4" else "IMR_NS"
+    MODEL = 'SEOBNRv4' if wf == 'seobnrv4' else 'IMR'
 except Exception:
-    MODEL = "IMR_NS"
+    MODEL = 'IMR'
+
 
 def pi_formatter(x, pos):
     """Format multiples of pi nicely."""
@@ -40,21 +47,22 @@ def pi_formatter(x, pos):
     # round to nearest half‐integer
     m_rounded = np.round(m * 2) / 2
     if m_rounded == 0:
-        return "0"
+        return '0'
     # express as fraction
     num, den = int(np.round(m_rounded * 2)), 2
     # if it's an integer multiple
     if num % den == 0:
         k = num // den
-        return rf"${k}\pi$" if k != 1 else r"$\pi$"
+        return rf"${k}\pi$" if k != 1 else r'$\pi$'
     else:
         # we have an odd numerator
         k = num
         return rf"$\dfrac{{{k}}}{{{den}}}\pi$"
 
+
 def evaluate():
-    logger.info("Starting single‐waveform evaluation and visualization…")
-    pred = WaveformPredictor("checkpoints", model=MODEL, device=DEVICE)
+    logger.info('Starting single‐waveform evaluation and visualization…')
+    pred = WaveformPredictor('checkpoints', model=MODEL, device=DEVICE)
     data = generate_data(samples=10)
 
     i = np.random.randint(0, 10)
@@ -64,13 +72,14 @@ def evaluate():
     time = data.time_unscaled
     L = len(time)
     amp_true_norm = data.targets_A.reshape(10, L)[i]
-    phi_true      = data.targets_phi.reshape(10, L)[i]
-    amp_true      = unscale_target(amp_true_norm, pred.amp_scale)
-    h_true        = amp_true * np.cos(phi_true)
+    phi_true = data.targets_phi.reshape(10, L)[i]
+    amp_true = unscale_target(amp_true_norm, pred.amp_scale)
+    h_true = amp_true * np.cos(phi_true)
 
     # model prediction
-    t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, chi1z, chi2z, incl, ecc)
-    h_pred      = amp_pred * np.cos(phi_pred)
+    t_norm, amp_pred, phi_pred = pred.predict_debug(
+        m1, m2, chi1z, chi2z, incl, ecc)
+    h_pred = amp_pred * np.cos(phi_pred)
 
     flen = L // 2 + 1
     df = 1.0 / (L * DELTA_T)
@@ -96,34 +105,34 @@ def evaluate():
     fig.suptitle(f"{title_str}", fontsize=16)
 
     # Top row: true vs pred
-    ax = axes[0,0]
-    ax.plot(time, h_true,     label="True", linewidth=1)
-    ax.plot(time, h_pred, "--",label="Pred", linewidth=1)
-    ax.set_title("Strain $h_+(t)$")
-    ax.set_ylabel("Strain")
+    ax = axes[0, 0]
+    ax.plot(time, h_true,     label='True', linewidth=1)
+    ax.plot(time, h_pred, '--', label='Pred', linewidth=1)
+    ax.set_title('Strain $h_+(t)$')
+    ax.set_ylabel('Strain')
     ax.legend()
 
     # Amplitude
-    ax = axes[0,1]
-    ax.plot(time, amp_true,     label="True", linewidth=1)
-    ax.plot(time, amp_pred, "--",label="Pred", linewidth=1)
-    ax.set_title("Amplitude")
+    ax = axes[0, 1]
+    ax.plot(time, amp_true,     label='True', linewidth=1)
+    ax.plot(time, amp_pred, '--', label='Pred', linewidth=1)
+    ax.set_title('Amplitude')
     ax.legend()
 
     # Unwrapped phase
-    ax = axes[0,2]
-    ax.plot(time, phi_true,     label="True", linewidth=1)
-    ax.plot(time, phi_pred, "--",label="Pred", linewidth=1)
-    ax.set_title("Phase (unwrapped)")
-    ax.set_ylabel("Phase [rad]")
+    ax = axes[0, 2]
+    ax.plot(time, phi_true,     label='True', linewidth=1)
+    ax.plot(time, phi_pred, '--', label='Pred', linewidth=1)
+    ax.set_title('Phase (unwrapped)')
+    ax.set_ylabel('Phase [rad]')
     ax.legend()
 
     # Wrapped phase
-    ax = axes[0,3]
-    ax.plot(time, phi_wr_true,     label="True", linewidth=1)
-    ax.plot(time, phi_wr_pred, "--",label="Pred", linewidth=1)
-    ax.set_title(r"Phase (wrapped $0 -> 2\pi$)")
-    ax.set_ylabel("Phase")
+    ax = axes[0, 3]
+    ax.plot(time, phi_wr_true,     label='True', linewidth=1)
+    ax.plot(time, phi_wr_pred, '--', label='Pred', linewidth=1)
+    ax.set_title(r'Phase (wrapped $0 -> 2\pi$)')
+    ax.set_ylabel('Phase')
     ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
     ax.set_ylim(0, 2*np.pi)
@@ -132,38 +141,38 @@ def evaluate():
 
     # Bottom row: residuals
     # Strain residual
-    ax = axes[1,0]
-    ax.plot(time, h_pred - h_true, color="C2", linewidth=1)
-    ax.set_title("Strain Residual")
-    ax.set_xlabel("Time [s]")
+    ax = axes[1, 0]
+    ax.plot(time, h_pred - h_true, color='C2', linewidth=1)
+    ax.set_title('Strain Residual')
+    ax.set_xlabel('Time [s]')
 
     # Amplitude residual
-    ax = axes[1,1]
-    ax.plot(time, amp_pred - amp_true, color="C2", linewidth=1)
-    ax.set_title("Amplitude Residual")
-    ax.set_xlabel("Time [s]")
+    ax = axes[1, 1]
+    ax.plot(time, amp_pred - amp_true, color='C2', linewidth=1)
+    ax.set_title('Amplitude Residual')
+    ax.set_xlabel('Time [s]')
 
     # Unwrapped phase residual
-    ax = axes[1,2]
-    ax.plot(time, phi_pred - phi_true, color="C2", linewidth=1)
-    ax.set_title("Phase Residual (unwrapped)")
-    ax.set_ylabel("Delta Phase [rad]")
-    ax.set_xlabel("Time [s]")
+    ax = axes[1, 2]
+    ax.plot(time, phi_pred - phi_true, color='C2', linewidth=1)
+    ax.set_title('Phase Residual (unwrapped)')
+    ax.set_ylabel('Delta Phase [rad]')
+    ax.set_xlabel('Time [s]')
 
     # Wrapped phase residual
-    ax = axes[1,3]
-    ax.plot(time, phi_res_wrapped, color="C2", linewidth=1)
-    ax.set_title(r"Phase Residual (wrapped $\pm \pi$)")
-    ax.set_ylabel(r"Delta Phase mod $2\pi$ [rad]")
+    ax = axes[1, 3]
+    ax.plot(time, phi_res_wrapped, color='C2', linewidth=1)
+    ax.set_title(r'Phase Residual (wrapped $\pm \pi$)')
+    ax.set_ylabel(r'Delta Phase mod $2\pi$ [rad]')
     ax.set_ylim(-np.pi, np.pi)
     ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
-    ax.set_xlabel("Time [s]")
+    ax.set_xlabel('Time [s]')
 
-    plt.tight_layout(rect=[0,0,1,0.95])
-    output_dir = "plots"
+    plt.tight_layout(rect=[0, 0, 1, 0.95])
+    output_dir = 'plots'
     os.makedirs(output_dir, exist_ok=True)
-    out_file = os.path.join(output_dir, "waveform_plots.png")
+    out_file = os.path.join(output_dir, 'waveform_plots.png')
     plt.savefig(out_file)
     logger.info(f"Saved waveform plot to {out_file}")
 
@@ -171,10 +180,11 @@ def evaluate():
     plot_prediction_uncertainty(
         pred,
         m1, m2, c1z, c2z, incl, ecc,
-        output_path="plots/prediction_uncertainty.png"
+        output_path='plots/prediction_uncertainty.png',
     )
 
-def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE):
+
+def cross_correlation(samples=1000, checkpoint_dir='checkpoints', device=DEVICE):
     """
     Generate 'samples' waveforms, predict them, compute per-pair cross-correlation (true[i] vs pred[i]),
     and plot:
@@ -186,7 +196,7 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
     """
 
     # Prepare output directory
-    plot_dir = "plots/cross_correlation"
+    plot_dir = 'plots/cross_correlation'
     os.makedirs(plot_dir, exist_ok=True)
 
     # Load data and model
@@ -198,7 +208,7 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
 
     # Containers
     h_trues, h_preds, t_norms = [], [], []
-    qs, m1s, m2s = [], [] ,[]
+    qs, m1s, m2s = [], [], []
     matches = np.zeros(samples)
 
     # Psd stuff
@@ -221,11 +231,12 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
         m1, m2, c1z, c2z, incl_i, ecc_i = thetas[idx]
         # True waveform (unscale amplitude)
         amp_norm = data.targets_A.reshape(-1, L)[idx]
-        phi_arr  = data.targets_phi.reshape(-1, L)[idx]
+        phi_arr = data.targets_phi.reshape(-1, L)[idx]
         amp_true = unscale_target(amp_norm, pred.amp_scale)
-        h_true   = amp_true * np.cos(phi_arr)
+        h_true = amp_true * np.cos(phi_arr)
         # Prediction (assume predict_debug returns unscaled amp and phi)
-        t_norm, amp_pred, phi_pred = pred.predict_debug(m1, m2, c1z, c2z, incl_i, ecc_i)
+        t_norm, amp_pred, phi_pred = pred.predict_debug(
+            m1, m2, c1z, c2z, incl_i, ecc_i)
         amp_pred = np.asarray(amp_pred)
         phi_pred = np.asarray(phi_pred)
         h_pred = amp_pred * np.cos(phi_pred)
@@ -249,9 +260,13 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
         # Compute analytic signals
         h_t = np.asarray(h_trues[idx])
         h_p = np.asarray(h_preds[idx])
-        t   = np.asarray(t_norms[idx])
-        an_t = hilbert(h_t); A_t = np.abs(an_t); ph_t = np.unwrap(np.angle(an_t))
-        an_p = hilbert(h_p); A_p = np.abs(an_p); ph_p = np.unwrap(np.angle(an_p))
+        t = np.asarray(t_norms[idx])
+        an_t = hilbert(h_t)
+        A_t = np.abs(an_t)
+        ph_t = np.unwrap(np.angle(an_t))
+        an_p = hilbert(h_p)
+        A_p = np.abs(an_p)
+        ph_p = np.unwrap(np.angle(an_p))
 
         # Raw differences
         dh_raw = h_p - h_t
@@ -293,21 +308,23 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
         ax = axs[1, 1]
         ax.plot(t, dh, label='|d Strain| (norm 0-1)', linewidth=1)
         ax.plot(t, dA, label='|d Amp| (norm 0-1)', linestyle='--', linewidth=1)
-        ax.plot(t, dph, label='|d Phase| (norm 0-1)', linestyle=':', linewidth=1)
+        ax.plot(t, dph, label='|d Phase| (norm 0-1)',
+                linestyle=':', linewidth=1)
         ax.set_title('Normalized Differences (absolute, min-max → 0..1)')
         ax.set_xlabel('Normalized Time')
         ax.set_ylabel('Normalized residual')
         ax.grid(True)
         ax.legend(loc='upper right', fontsize='small')
 
-        fig.suptitle(f"{title} (idx={idx}, match={matches[idx]:.4f})", fontsize=16)
+        fig.suptitle(
+            f"{title} (idx={idx}, match={matches[idx]:.4f})", fontsize=16)
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
         plt.savefig(os.path.join(plot_dir, fname), dpi=200)
         plt.close()
 
     # Best and worst overlays
-    plot_comparison(best_idx, "Best match", "best_match_comparison.png")
-    plot_comparison(worst_idx, "Worst match", "worst_match_comparison.png")
+    plot_comparison(best_idx, 'Best match', 'best_match_comparison.png')
+    plot_comparison(worst_idx, 'Worst match', 'worst_match_comparison.png')
 
     # Scatter match vs q
     plt.figure(figsize=(16, 8), dpi=150)
@@ -317,7 +334,7 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
     plt.title('Match vs Mass Ratio')
     plt.grid(True)
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, "match_vs_q.png"), dpi=150)
+    plt.savefig(os.path.join(plot_dir, 'match_vs_q.png'), dpi=150)
     plt.close()
 
     # --- Smooth 3D surface that fills the whole x-y area ---
@@ -337,31 +354,34 @@ def cross_correlation(samples=1000, checkpoint_dir="checkpoints", device=DEVICE)
     match_grid_cubic = griddata(pts, vals, (M1_grid, M2_grid), method='cubic')
     mask_nan = np.isnan(match_grid_cubic)
     if mask_nan.any():
-        match_grid_nearest = griddata(pts, vals, (M1_grid, M2_grid), method='nearest')
+        match_grid_nearest = griddata(
+            pts, vals, (M1_grid, M2_grid), method='nearest')
         match_grid_cubic[mask_nan] = match_grid_nearest[mask_nan]
     match_grid = match_grid_cubic
 
     # Plot surface
     fig = plt.figure(figsize=(12, 8))
     ax = fig.add_subplot(111, projection='3d')
-    surf = ax.plot_surface(M1_grid, M2_grid, match_grid, cmap='viridis', linewidth=0, antialiased=True)
+    surf = ax.plot_surface(M1_grid, M2_grid, match_grid,
+                           cmap='viridis', linewidth=0, antialiased=True)
     ax.set_xlabel('Mass m1')
     ax.set_ylabel('Mass m2')
     ax.set_zlabel('Match')
     ax.set_title('3D Surface: Masses vs Match (smooth)')
     fig.colorbar(surf, shrink=0.5, aspect=5)
     plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, "3d_match_surface.png"), dpi=150)
+    plt.savefig(os.path.join(plot_dir, '3d_match_surface.png'), dpi=150)
     plt.close()
 
     return matches
+
 
 def plot_prediction_uncertainty(
     predictor: WaveformPredictor,
     mass_1: float, mass_2: float,
     spin1_z: float, spin2_z: float,
     inclination: float, eccentricity: float,
-    output_path: str = "plots/prediction_uncertainty.png"
+    output_path: str = 'plots/prediction_uncertainty.png',
 ):
     """
     Generate and save a plot of h(t) with its uncertainty band.
@@ -377,29 +397,31 @@ def plot_prediction_uncertainty(
         mass_1, mass_2,
         spin1_z, spin2_z,
         inclination, eccentricity,
-        sigma_level=set_sigma_level
+        sigma_level=set_sigma_level,
     )
 
     # Plot
-    fig, ax = plt.subplots(figsize=(10,4))
+    fig, ax = plt.subplots(figsize=(10, 4))
     time = plus_strain.time
     mean = plus_strain.data
     sigma = plus_strain.uncertainty
 
     ax.plot(time, mean, label=f"Predicted $h_+(t)$", linewidth=1)
-    ax.fill_between(time,
-                    mean - sigma,
-                    mean + sigma,
-                    color=ax.lines[-1].get_color(),
-                    alpha=0.3,
-                    label=rf"$\pm{set_sigma_level}\sigma $band")
+    ax.fill_between(
+        time,
+        mean - sigma,
+        mean + sigma,
+        color=ax.lines[-1].get_color(),
+        alpha=0.3,
+        label=rf"$\pm{set_sigma_level}\sigma $band",
+    )
     ax.set_title(
         rf"Prediction $\pm1\sigma$ | $m_1$={mass_1:.1f}, $m_2$={mass_2:.1f}, "
-        rf"$χ_1z$={spin1_z:.2f}, $χ_2z$={spin2_z:.2f}, incl={inclination:.2f}, ecc={eccentricity:.2f}"
+        rf"$χ_1z$={spin1_z:.2f}, $χ_2z$={spin2_z:.2f}, incl={inclination:.2f}, ecc={eccentricity:.2f}",
     )
-    ax.set_xlabel("Time [s]")
-    ax.set_ylabel("Strain h₊")
-    ax.legend(loc="best")
+    ax.set_xlabel('Time [s]')
+    ax.set_ylabel('Strain h₊')
+    ax.legend(loc='best')
     ax.grid(True)
 
     # Save and close
@@ -409,10 +431,13 @@ def plot_prediction_uncertainty(
 
     logger.info(f"Saved uncertainty plot to {output_path}")
 
-def generate_match_heatmap(MASS_MIN, MASS_MAX,
-                           chi1z=0.0, chi2z=0.0,
-                           incl=0.0, ecc=0.0,
-                           output_path: str = "plots/heatmap.png"):
+
+def generate_match_heatmap(
+    MASS_MIN, MASS_MAX,
+    chi1z=0.0, chi2z=0.0,
+    incl=0.0, ecc=0.0,
+    output_path: str = 'plots/heatmap.png',
+):
     """
     Generates and plots a *smooth* 2D heatmap of match values over (m1, m2),
     sampling both masses from MASS_MIN to MASS_MAX in steps of 5, then
@@ -424,7 +449,7 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     m2_vals = np.arange(MASS_MIN, MASS_MAX + step, step)
 
     pts_m1, pts_m2, pts_match = [], [], []
-    pred = WaveformPredictor("checkpoints", model=MODEL, device=DEVICE)
+    pred = WaveformPredictor('checkpoints', model=MODEL, device=DEVICE)
 
     # Psd stuff
     flen = WAVEFORM_LENGTH // 2 + 1
@@ -435,14 +460,14 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     for m1 in m1_vals:
         for m2 in m2_vals:
             # true waveform padded/truncated
-            hp_t = make_waveform((m2,m2,chi1z,chi2z,incl,ecc))
+            hp_t = make_waveform((m2, m2, chi1z, chi2z, incl, ecc))
             hp_true = np.asarray(hp_t.data[-int(WAVEFORM_LENGTH/DELTA_T):])
 
             # predicted waveform
             hp_p, _ = pred.predict(
                 m1, m2, chi1z, chi2z, incl, ecc,
                 waveform_length=WAVEFORM_LENGTH,
-                sampling_dt=DELTA_T
+                sampling_dt=DELTA_T,
             )
             hp_pred = np.asarray(hp_p.data[-int(WAVEFORM_LENGTH/DELTA_T):])
 
@@ -462,7 +487,7 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
         (pts_m1, pts_m2),
         pts_match,
         (m1_grid_f, m2_grid_f),
-        method='cubic'
+        method='cubic',
     )
 
     # plot
@@ -477,20 +502,26 @@ def generate_match_heatmap(MASS_MIN, MASS_MAX,
     plt.colorbar(im, label='Match Value')
     plt.xlabel('m1 [$M_\\odot$]')
     plt.ylabel('m2 [$M_\\odot$]')
-    plt.title(f'Match Heatmap ({MASS_MIN}–{MASS_MAX} $M_\\odot$, coarse step={step})')
+    plt.title(
+        f'Match Heatmap ({MASS_MIN}–{MASS_MAX} $M_\\odot$, coarse step={step})')
 
     plt.tight_layout()
     plt.savefig(output_path)
     plt.close()
     logger.info(f"Saved smooth heatmap to {output_path}")
 
+
 def _plot_overlay(h_true, h_pred, t, title, fname):
     """
     Overlay plots: strain, amplitude, phase, and *normalized* differences (0-1).
     The differences are plotted as absolute residuals min-max normalized per-array to [0,1].
     """
-    an_t = hilbert(h_true); A_t = np.abs(an_t); ph_t = np.unwrap(np.angle(an_t))
-    an_p = hilbert(h_pred); A_p = np.abs(an_p); ph_p = np.unwrap(np.angle(an_p))
+    an_t = hilbert(h_true)
+    A_t = np.abs(an_t)
+    ph_t = np.unwrap(np.angle(an_t))
+    an_p = hilbert(h_pred)
+    A_p = np.abs(an_p)
+    ph_p = np.unwrap(np.angle(an_p))
 
     # Raw differences
     dh_raw = h_pred - h_true
@@ -553,12 +584,13 @@ def _plot_overlay(h_true, h_pred, t, title, fname):
     plt.savefig(fname, dpi=200)
     plt.close()
 
+
 def compare_surrogates_against_approximants(
     approximants: Sequence[str],
-    surrogates: Dict[str, Any],
+    surrogates: dict[str, Any],
     samples: int = 200,
     batch_size: int = 128,
-    out_dir: str = "plots/approximant_benchmark",
+    out_dir: str = 'plots/approximant_benchmark',
     use_tqdm: bool = True,
 ):
     """
@@ -572,7 +604,7 @@ def compare_surrogates_against_approximants(
     """
     results = {}
 
-    loop = tqdm(approximants, desc="approximants") if use_tqdm else approximants
+    loop = tqdm(approximants, desc='approximants') if use_tqdm else approximants
 
     # PSD for match computation
     flen = WAVEFORM_LENGTH // 2 + 1
@@ -582,7 +614,7 @@ def compare_surrogates_against_approximants(
     for approx in loop:
         dataset = generate_data(waveform=approx, samples=samples, clean=True)
         L = dataset.time_unscaled.size
-        t_norm = getattr(dataset, "t_norm_array", dataset.time_unscaled)
+        t_norm = getattr(dataset, 't_norm_array', dataset.time_unscaled)
 
         amps_norm = dataset.targets_A.reshape(samples, L)
         phis = dataset.targets_phi.reshape(samples, L)
@@ -596,47 +628,57 @@ def compare_surrogates_against_approximants(
             os.makedirs(comp_dir, exist_ok=True)
 
             # Determine amplitude scale
-            amp_scale = getattr(predictor, "amp_scale", getattr(dataset, "amp_scale", 1.0))
+            amp_scale = getattr(predictor, 'amp_scale',
+                                getattr(dataset, 'amp_scale', 1.0))
 
             # Unscale amplitude
             try:
-                amp_true_mat = np.asarray(unscale_target(amps_norm, amp_scale)).reshape(samples, L)
+                amp_true_mat = np.asarray(unscale_target(
+                    amps_norm, amp_scale)).reshape(samples, L)
             except Exception:
-                amp_true_mat = np.stack([
-                    np.asarray(unscale_target(amps_norm[i], amp_scale)).reshape(-1)
-                    for i in range(samples)
-                ], axis=0)
+                amp_true_mat = np.stack(
+                    [
+                        np.asarray(unscale_target(
+                            amps_norm[i], amp_scale)).reshape(-1)
+                        for i in range(samples)
+                    ], axis=0,
+                )
 
             # Construct true strain
             h_true = amp_true_mat * np.cos(phis)
 
             # Predict strain
             h_pred = None
-            if hasattr(predictor, "batch_predict"):
+            if hasattr(predictor, 'batch_predict'):
                 try:
-                    out = predictor.batch_predict(thetas, batch_size=batch_size)
+                    out = predictor.batch_predict(
+                        thetas, batch_size=batch_size)
                     h_list = out[0] if isinstance(out, tuple) else out
                     if isinstance(h_list, np.ndarray):
                         h_pred = h_list
                     else:
-                        h_pred = np.stack([
-                            np.asarray(getattr(h, "data", h)).reshape(-1) for h in h_list
-                        ], axis=0)
+                        h_pred = np.stack(
+                            [
+                                np.asarray(getattr(h, 'data', h)).reshape(-1) for h in h_list
+                            ], axis=0,
+                        )
                 except Exception:
                     pass
 
             if h_pred is None:
                 h_pred = []
-                rng = tqdm(range(samples), desc=f"{approx}:{name}", leave=False) if use_tqdm else range(samples)
+                rng = tqdm(range(
+                    samples), desc=f"{approx}:{name}", leave=False) if use_tqdm else range(samples)
                 for i in rng:
                     theta = thetas[i]
-                    if hasattr(predictor, "predict_debug"):
+                    if hasattr(predictor, 'predict_debug'):
                         _, amp_pred, phi_pred = predictor.predict_debug(*theta)
-                        h_i = np.asarray(amp_pred) * np.cos(np.asarray(phi_pred))
+                        h_i = np.asarray(amp_pred) * \
+                            np.cos(np.asarray(phi_pred))
                     else:
                         out = predictor.predict(*theta)
                         hs = out[0] if isinstance(out, tuple) else out
-                        h_i = np.asarray(getattr(hs, "data", hs)).reshape(-1)
+                        h_i = np.asarray(getattr(hs, 'data', hs)).reshape(-1)
                     h_pred.append(h_i)
                 h_pred = np.stack(h_pred, axis=0)
 
@@ -649,47 +691,53 @@ def compare_surrogates_against_approximants(
                     h_pred = np.concatenate([h_pred, pad], axis=1)
 
             # Compute matches
-            matches = np.array([compute_match(h_true[i], h_pred[i], DELTA_T) for i in range(samples)])
+            matches = np.array(
+                [compute_match(h_true[i], h_pred[i], DELTA_T) for i in range(samples)])
             results[approx][name] = matches
 
             # Scatter plot
             plt.figure(figsize=(10, 4))
             plt.scatter(np.arange(samples), matches, s=12)
-            plt.xlabel("Sample idx")
-            plt.ylabel("Match")
+            plt.xlabel('Sample idx')
+            plt.ylabel('Match')
             plt.title(f"{approx} / {name} — Match Scatter")
             plt.grid(True)
             plt.tight_layout()
-            plt.savefig(os.path.join(comp_dir, "match_scatter.png"), dpi=150)
+            plt.savefig(os.path.join(comp_dir, 'match_scatter.png'), dpi=150)
             plt.close()
 
             # Density plot with 1σ, 2σ, 3σ lines
             mean_val = np.mean(matches)
             std_val = np.std(matches)
             plt.figure(figsize=(8, 4))
-            plt.hist(matches, bins=30, density=True, alpha=0.6, label="Histogram")
+            plt.hist(matches, bins=30, density=True,
+                     alpha=0.6, label='Histogram')
             if len(matches) > 1:
                 kde = gaussian_kde(matches)
                 xs = np.linspace(np.min(matches), np.max(matches), 500)
-                plt.plot(xs, kde(xs), linewidth=2, label="KDE")
+                plt.plot(xs, kde(xs), linewidth=2, label='KDE')
             for n in [1, 2, 3]:
-                plt.axvline(mean_val + n * std_val, color="r", linestyle=":", linewidth=1,
-                            label=f"+{n}σ" if n == 1 else None)
-                plt.axvline(mean_val - n * std_val, color="r", linestyle=":", linewidth=1)
-            plt.axvline(mean_val, color="k", linestyle="--", linewidth=1, label="Mean")
+                plt.axvline(
+                    mean_val + n * std_val, color='r', linestyle=':', linewidth=1,
+                    label=f"+{n}σ" if n == 1 else None,
+                )
+                plt.axvline(mean_val - n * std_val, color='r',
+                            linestyle=':', linewidth=1)
+            plt.axvline(mean_val, color='k', linestyle='--',
+                        linewidth=1, label='Mean')
             plt.title(f"{approx} / {name} — Match Distribution")
-            plt.xlabel("Match")
-            plt.ylabel("Density")
+            plt.xlabel('Match')
+            plt.ylabel('Density')
             plt.grid(True)
             plt.legend()
             plt.tight_layout()
-            plt.savefig(os.path.join(comp_dir, "match_density.png"), dpi=150)
+            plt.savefig(os.path.join(comp_dir, 'match_density.png'), dpi=150)
             plt.close()
 
             # Best & worst overlays
             best_idx = int(np.argmax(matches))
             worst_idx = int(np.argmin(matches))
-            for idx, label in [(best_idx, "best"), (worst_idx, "worst")]:
+            for idx, label in [(best_idx, 'best'), (worst_idx, 'worst')]:
                 m1, m2, s1z, s2z, inc, ecc = map(float, thetas[idx])
                 params_str = f"m1={m1:.6g}, m2={m2:.6g}, s1z={s1z:.3f}, s2z={s2z:.3f}, inc={inc:.3f}, ecc={ecc:.3f}"
                 title = f"{approx} / {name} — {label} match={matches[idx]:.4f} | {params_str}"
@@ -701,52 +749,54 @@ def compare_surrogates_against_approximants(
     for approx, d in results.items():
         for name, arr in d.items():
             rows.append({
-                "approximant": approx,
-                "predictor": name,
-                "mean": float(np.mean(arr)),
-                "std": float(np.std(arr)),
-                "min": float(np.min(arr)),
-                "25%": float(np.percentile(arr, 25)),
-                "50%": float(np.median(arr)),
-                "75%": float(np.percentile(arr, 75)),
-                "max": float(np.max(arr)),
-                "n": len(arr),
+                'approximant': approx,
+                'predictor': name,
+                'mean': float(np.mean(arr)),
+                'std': float(np.std(arr)),
+                'min': float(np.min(arr)),
+                '25%': float(np.percentile(arr, 25)),
+                '50%': float(np.median(arr)),
+                '75%': float(np.percentile(arr, 75)),
+                'max': float(np.max(arr)),
+                'n': len(arr),
             })
-    summary_df = pd.DataFrame(rows).set_index(["approximant", "predictor"]).sort_index()
+    summary_df = pd.DataFrame(rows).set_index(
+        ['approximant', 'predictor']).sort_index()
 
     return results, summary_df
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     # Logging
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs('logs', exist_ok=True)
 
     logging.basicConfig(
         level=logging.DEBUG,
-        format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+        format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
         handlers=[
             logging.StreamHandler(),
-            logging.FileHandler("logs/evaluation.log", mode='a'),
-        ]
+            logging.FileHandler('logs/evaluation.log', mode='a'),
+        ],
     )
 
     # Stopping the voices
-    logging.getLogger("matplotlib.font_manager").setLevel(logging.WARNING)
-    logging.getLogger("matplotlib.ticker").setLevel(logging.WARNING)
+    logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
+    logging.getLogger('matplotlib.ticker').setLevel(logging.WARNING)
 
     evaluate()
 
     matches = cross_correlation()
 
-    generate_match_heatmap(25,125)
+    generate_match_heatmap(25, 125)
 
-    approximants = ["SEOBNRv4", "IMRPhenomD", "SEOBNRv4HM", "IMRPhenomXHM"]
+    approximants = ['SEOBNRv4', 'IMRPhenomD', 'SEOBNRv4HM', 'IMRPhenomXHM']
     surrogates = {
-        "IMR Model": WaveformPredictor("checkpoints", model="IMR", device=DEVICE),
-        "EOB model": WaveformPredictor("checkpoints", model="EOB", device=DEVICE),
+        'IMR Model': WaveformPredictor('checkpoints', model='IMR', device=DEVICE),
+        'EOB model': WaveformPredictor('checkpoints', model='SEOBNRv4', device=DEVICE),
     }
 
     results, summary_df = compare_surrogates_against_approximants(
-        approximants, surrogates, samples=1000, batch_size=128, out_dir="plots/approximants"
+        approximants, surrogates, samples=1000, batch_size=128, out_dir='plots/approximants',
     )
 
     print(summary_df)

@@ -8,27 +8,27 @@ pycbc:
 
   phenomd:
     waveform_name:   "IMRPhenomD"
-    delta_t:         2056
+    delta_t:         1024
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 2056
+    waveform_length: 4096
 
 model:
   amp_emb_hidden: [64,64]
-  amp_hidden: [128,128,128]
-  amp_banks: 1
-  amp_dropout: 0.1
-  amp_lr: 0.0009
+  amp_hidden: [256,256,256,256]
+  amp_banks: 3
+  amp_dropout: 0.15
+  amp_lr: 0.001
   amp_clip: 3
   phase_emb_hidden: [64,64]
-  phase_hidden: [256,256,256,256, 256]
+  phase_hidden: [256,256,256,256,256]
   phase_banks: 6
-  phase_dropout: 0.1
-  phase_lr: 0.0007
+  phase_dropout: 0.15
+  phase_lr: 0.001
   phase_clip: 4
 
 sampling_ranges:
-  mass_min:     50.0
+  mass_min:     10.0
   mass_max:     100.0
   spin_mag_min: -0.7
   spin_mag_max:  0.7
