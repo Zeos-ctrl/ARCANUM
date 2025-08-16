@@ -1,0 +1,8 @@
+{
+  "amp_hidden_size": 64,
+  "banks": 3,
+  "dropout": 0.15000000000000002,
+  "layers": 5,
+  "weight_decay": 3.06252812389104e-05,
+  "grad_clip": 3.699758174632126
+}
