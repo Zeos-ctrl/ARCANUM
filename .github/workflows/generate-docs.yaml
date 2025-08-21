@@ -133,7 +133,7 @@ jobs:
     
     - name: Upload documentation artifacts
       if: always()
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: documentation-${{ github.sha }}
         path: ${{ env.OUTPUT_DIR }}
