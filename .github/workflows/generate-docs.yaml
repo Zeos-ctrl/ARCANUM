@@ -81,13 +81,13 @@ jobs:
         
         # Run the documentation generator
         if [ "${{ inputs.skip_uml }}" == "true" ]; then
-          python scripts/generate_docs.sh \
+          bash scripts/generate_docs.sh \
             "${{ env.SOURCE_DIR }}" \
             "${{ env.OUTPUT_DIR }}" \
             --uml-dir "${{ env.UML_DIR }}" \
             --no-uml
         else
-          python scripts/generate_docs.sh \
+          bash scripts/generate_docs.sh \
             "${{ env.SOURCE_DIR }}" \
             "${{ env.OUTPUT_DIR }}" \
             --uml-dir "${{ env.UML_DIR }}"
