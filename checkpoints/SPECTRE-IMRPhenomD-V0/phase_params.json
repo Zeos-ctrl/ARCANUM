@@ -1,0 +1,8 @@
+{
+  "phase_hidden_size": 256,
+  "banks": 6,
+  "dropout": 0.4,
+  "layers": 5,
+  "weight_decay": 0.0016934155410667966,
+  "grad_clip": 4.037993176805661
+}
