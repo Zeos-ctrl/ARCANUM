@@ -158,7 +158,6 @@ def compute_last_layer_hessian_diag(
 
     return weight_variances, bias_variance
 
-
 def compute_match(h1, h2, dt, f_low=20.0):
     from pycbc.types import TimeSeries
     from pycbc.filter import match
@@ -181,7 +180,6 @@ def compute_match(h1, h2, dt, f_low=20.0):
     m, _ = match(h1_ts, h2_ts, psd=psd, low_frequency_cutoff=f_low)
     return m
 
-
 @dataclass
 class TimeSeriesStrainData:
     data: np.ndarray        # Data array of the waveform
@@ -190,7 +188,175 @@ class TimeSeriesStrainData:
     sample_rate: float      # delta_t
     time: np.ndarray        # Normalized time array
     approximant: str        # approximant used in training
-
+    
+    def apply_extrinsic_parameters(
+        self,
+        h_cross: 'TimeSeriesStrainData' = None,
+        distance: float = 100.0,  # Mpc
+        ra: float = 0.0,  # Right ascension (radians)
+        dec: float = 0.0,  # Declination (radians)
+        psi: float = 0.0,  # Polarization angle (radians)
+        phase: float = 0.0,  # Orbital phase (radians)
+        time_shift: float = 0.0,  # Time shift (seconds)
+        geocent_time: float = 0.0,  # Geocentric GPS time
+        detector: str = 'H1',  # Detector name
+    ) -> 'TimeSeriesStrainData':
+        """
+        Apply extrinsic parameters to transform h_plus and h_cross into detector strain.
+        
+        This method assumes 'self' is h_plus. 
+        
+        Args:
+            h_cross: The h_cross polarization TimeSeriesStrainData
+            distance: Luminosity distance in Mpc
+            ra: Right ascension in radians (0 to 2π)
+            dec: Declination in radians (-π/2 to π/2)
+            psi: Polarization angle in radians (0 to 2π)
+            phase: Orbital phase at coalescence in radians (0 to 2π)
+            time_shift: Additional time shift in seconds
+            geocent_time: Geocentric GPS time of coalescence
+            detector: Detector name ('H1', 'L1', 'V1', 'G1', 'K1', 'ET', etc.)
+            
+        Returns:
+            TimeSeriesStrainData: Detector strain with extrinsic parameters applied
+        """
+        try:
+            from gwpy.detector import Detector
+            
+            # Get detector object
+            det = Detector(detector)
+            
+            # Compute antenna response
+            Fp, Fx = det.antenna_response(ra, dec, psi, geocent_time)
+            
+            # Compute time delay from geocenter to detector
+            dt_detector = det.time_delay_from_geocenter(ra, dec, geocent_time)
+            
+        except ImportError:
+            # Fallback to simple antenna patterns if gwpy not available
+            print("Warning: gwpy not found, using simplified antenna patterns")
+            Fp, Fx = self._simple_antenna_patterns(ra, dec, psi, detector)
+            dt_detector = 0.0
+        except Exception as e:
+            print(f"Warning: Error getting detector response ({e}), using simplified patterns")
+            Fp, Fx = self._simple_antenna_patterns(ra, dec, psi, detector)
+            dt_detector = 0.0
+        
+        # Get h_plus data (self)
+        h_plus_data = self.data.copy()
+        
+        # Get h_cross data if provided, otherwise assume zero
+        if h_cross is not None:
+            h_cross_data = h_cross.data.copy()
+        else:
+            h_cross_data = np.zeros_like(h_plus_data)
+        
+        # Apply phase shift if needed
+        if phase != 0:
+            # Apply phase shift in frequency domain
+            n = len(h_plus_data)
+            h_plus_fft = np.fft.rfft(h_plus_data)
+            h_cross_fft = np.fft.rfft(h_cross_data)
+            
+            # Apply phase rotation
+            phase_factor = np.exp(1j * phase)
+            h_plus_fft *= phase_factor
+            h_cross_fft *= phase_factor
+            
+            h_plus_data = np.fft.irfft(h_plus_fft, n=n)
+            h_cross_data = np.fft.irfft(h_cross_fft, n=n)
+        
+        # Project onto detector using antenna patterns
+        h_detector = Fp * h_plus_data + Fx * h_cross_data
+        
+        # Apply distance scaling
+        # Standard GW scaling: strain scales as 1/distance
+        reference_distance = 1.0  # Reference distance in Mpc
+        distance_factor = reference_distance / distance
+        h_detector *= distance_factor
+        
+        # Apply total time shift (detector delay + additional shift)
+        total_time_shift = dt_detector + time_shift
+        
+        if total_time_shift != 0:
+            # Apply time shift in frequency domain for accuracy
+            n = len(h_detector)
+            freqs = np.fft.rfftfreq(n, d=self.sample_rate)
+            h_fft = np.fft.rfft(h_detector)
+            h_fft *= np.exp(-2j * np.pi * freqs * total_time_shift)
+            h_detector = np.fft.irfft(h_fft, n=n)
+        
+        # Handle uncertainties if they exist
+        detector_uncertainty = None
+        if self.uncertainty is not None or (h_cross is not None and h_cross.uncertainty is not None):
+            # Get uncertainties, using zeros if not provided
+            h_plus_unc = self.uncertainty if self.uncertainty is not None else np.zeros_like(self.data)
+            h_cross_unc = h_cross.uncertainty if (h_cross is not None and h_cross.uncertainty is not None) else np.zeros_like(h_cross_data)
+            
+            # Propagate uncertainties through projection and scaling
+            detector_uncertainty = np.sqrt(
+                (Fp * h_plus_unc)**2 + (Fx * h_cross_unc)**2
+            ) * distance_factor
+        
+        # Create new TimeSeriesStrainData for detector strain
+        detector_strain = TimeSeriesStrainData(
+            data=h_detector,
+            uncertainty=detector_uncertainty,
+            epoch=self.epoch + total_time_shift,  # Adjust epoch for time shift
+            sample_rate=self.sample_rate,
+            time=self.time,  # Keep normalized time the same
+            approximant=self.approximant
+        )
+        
+        return detector_strain
+    
+    def _simple_antenna_patterns(
+        self, 
+        ra: float, 
+        dec: float, 
+        psi: float, 
+        detector: str
+    ) -> Tuple[float, float]:
+        """
+        Simple fallback antenna pattern calculation when gwpy is not available.
+        
+        Args:
+            ra: Right ascension in radians
+            dec: Declination in radians  
+            psi: Polarization angle in radians
+            detector: Detector name
+            
+        Returns:
+            Tuple[float, float]: (F_plus, F_cross) antenna pattern values
+        """
+        # Simplified antenna patterns (detector on equator approximation)
+        
+        # Detector positions (longitude in radians)
+        detector_longitudes = {
+            'H1': -119.408 * np.pi / 180,  # LIGO Hanford
+            'L1': -90.774 * np.pi / 180,   # LIGO Livingston
+            'V1': 10.504 * np.pi / 180,    # Virgo
+            'G1': 9.807 * np.pi / 180,     # GEO600
+            'K1': 137.306 * np.pi / 180,   # KAGRA
+        }
+        
+        lon = detector_longitudes.get(detector, 0.0)
+        
+        # Hour angle
+        ha = lon - ra
+        
+        # This is a rough approximation
+        Fp = -0.5 * (1 + np.cos(dec)**2) * np.cos(2 * ha)
+        Fx = np.cos(dec) * np.sin(2 * ha)
+        
+        # Apply polarization rotation
+        cos_2psi = np.cos(2 * psi)
+        sin_2psi = np.sin(2 * psi)
+        
+        F_plus = Fp * cos_2psi - Fx * sin_2psi
+        F_cross = Fp * sin_2psi + Fx * cos_2psi
+        
+        return F_plus, F_cross
 
 class WaveformPredictor:
     def __init__(self, checkpoint_dir: str, model: str, device: str = DEVICE):
@@ -232,15 +398,13 @@ class WaveformPredictor:
         self.waveform_length = int(meta['waveform_length'])
         self.delta_t = float(meta['delta_t'])
         self.train_samples = int(meta.get('train_samples', 0))
-        self.in_dim_len = int(meta.get('in_dim_len'))
+        self.in_dim_len = int(meta.get('in_dim_len', len(TRAIN_FEATURES)))
 
         # Build and load models
         self.amp_model = make_amp_model(
             in_param_dim=self.in_dim_len, params=amp_params).to(self.device)
-
         self.phase_model = make_phase_model(
             param_dim=self.in_dim_len, params=phase_params).to(self.device)
-
         self.amp_model.load_state_dict(
             torch.load(os.path.join(checkpoint_dir, model,
                        'amp_model.pt'), map_location=self.device),
@@ -270,7 +434,8 @@ class WaveformPredictor:
         self.logger.info(f"Using {self.device}...")
         self.logger.info('Models and variances loaded; in eval mode.')
 
-    def _compute_derived(self, m1: float, m2: float, chi1z: float, chi2z: float, inclination: float, eccentricity: float) -> np.ndarray:
+    def _compute_derived(self, m1: float, m2: float, chi1z: float, chi2z: float, 
+                        inclination: float, eccentricity: float) -> np.ndarray:
         """Compute derived features dynamically based on TRAIN_FEATURES list."""
         # base parameter dict
         param_map = {
@@ -282,6 +447,35 @@ class WaveformPredictor:
         }
         # construct array in order of TRAIN_FEATURES
         return np.array([param_map[feat] for feat in TRAIN_FEATURES], dtype=np.float32)
+    
+    def _compute_derived_vectorized(self, params: np.ndarray) -> np.ndarray:
+        """Vectorized computation of derived features for multiple parameter sets.
+        
+        Args:
+            params: Array of shape (N, 6) with columns [m1, m2, chi1z, chi2z, inc, ecc]
+        
+        Returns:
+            Array of shape (N, D) where D is len(TRAIN_FEATURES)
+        """
+        m1, m2, chi1z, chi2z, inc, ecc = params.T
+        
+        # Compute all derived features vectorized
+        chirp_mass = (m1 * m2) ** (3.0/5.0) / (m1 + m2) ** (1.0/5.0)
+        symmetric_mass_ratio = (m1 * m2) / (m1 + m2) ** 2
+        effective_spin = (m1 * chi1z + m2 * chi2z) / (m1 + m2)
+        
+        # Build feature dictionary
+        feature_dict = {
+            'chirp_mass': chirp_mass,
+            'symmetric_mass_ratio': symmetric_mass_ratio,
+            'effective_spin': effective_spin,
+            'inclination': inc,
+            'eccentricity': ecc,
+        }
+        
+        # Stack in correct order
+        derived = np.stack([feature_dict[feat] for feat in TRAIN_FEATURES], axis=1)
+        return derived.astype(np.float32)
 
     def _normalize_derived(self, derived_array: np.ndarray) -> np.ndarray:
         """Normalize derived parameters using stored means and standard deviations."""
@@ -361,85 +555,99 @@ class WaveformPredictor:
 
     def batch_predict(self, thetas_raw, batch_size=None):
         """
-        Using GPU batching take an array of parameters and return waveforms
+        Using GPU batching take an array of parameters and return waveforms.
+        Optimized version with vectorized operations and minimal GPU transfers.
         """
-        # get sizes
+        # Get sizes
         N = thetas_raw.shape[0]
         length = self.waveform_length
         delta_t = self.delta_t
+        
+        # Use optimal batch size if not specified
         if batch_size is None:
-            batch_size = self.train_samples
-
-        # precompute time grids
-        real_time = np.linspace(-length*delta_t, 0.0, length)
-        time_norm = 2*(real_time + length*delta_t)/(length*delta_t) - 1
-
-        D = len(TRAIN_FEATURES)
-        all_amp, all_phi = [], []
-
+            # Use reasonable default that works well on most GPUs
+            batch_size = min(32, N, self.train_samples if self.train_samples > 0 else 32)
+        
+        # Precompute time grids once
+        real_time = np.linspace(-length * delta_t, 0.0, length)
+        time_norm = 2 * (real_time + length * delta_t) / (length * delta_t) - 1
+        
+        # Vectorized computation of ALL derived features at once
+        all_derived = self._compute_derived_vectorized(thetas_raw)
+        all_normalized = self._normalize_derived(all_derived)
+        
+        # Process in batches on GPU
+        all_amp_gpu = []
+        all_phi_gpu = []
+        
         for start in range(0, N, batch_size):
-            end   = min(start+batch_size, N)
-            block = thetas_raw[start:end]
-            B     = end - start
-
-            # derived & normalize (B,D)
-            derived = []
-            for (m1,m2,sp1,sp2,inc,ecc) in block:
-                dm = {
-                    "chirp_mass":           (m1*m2)**(3/5)/(m1+m2)**(1/5),
-                    "symmetric_mass_ratio": (m1*m2)/(m1+m2)**2,
-                    "effective_spin":       (m1*sp1 + m2*sp2)/(m1+m2),
-                    "inclination":          inc,
-                    "eccentricity":         ecc
-                }
-                derived.append([dm[f] for f in TRAIN_FEATURES])
-            derived = np.array(derived, dtype=np.float32)
-            theta_norm = (derived - self.param_means) / self.param_stds
-
-            # build and flatten model input (B*L,1+D)
-            t_blk = np.broadcast_to(time_norm, (B, length))
-            p_blk = np.broadcast_to(theta_norm[:,None,:], (B, length, D))
-            flat  = np.concatenate([t_blk[...,None], p_blk], axis=-1).reshape(-1,1+D).astype(np.float32)
-
-            inp_t = torch.from_numpy(flat).to(self.device)
+            end = min(start + batch_size, N)
+            B = end - start
+            
+            # Get normalized features for this batch
+            batch_features = all_normalized[start:end]
+            
+            # Build flattened input efficiently
+            # Time component - broadcast to (B*length,)
+            t_flat = np.tile(time_norm, B)
+            
+            # Parameter component - repeat each parameter vector 'length' times
+            p_flat = np.repeat(batch_features, length, axis=0)
+            
+            # Combine into input tensor
+            flat_input = np.column_stack([t_flat, p_flat]).astype(np.float32)
+            
+            # Single GPU transfer for this batch
+            inp_t = torch.from_numpy(flat_input).to(self.device)
+            
             with torch.no_grad():
-                Amp_norm = self.amp_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, length)
-                phase  = self.phase_model(inp_t[:,:1], inp_t[:,1:]).cpu().numpy().reshape(B, length)
-
-            all_amp.append(Amp_norm)
-            all_phi.append(phase)
-
-        Amp_mat   = np.vstack(all_amp)   # (N,L)
-        phi_mat = np.vstack(all_phi)   # (N,L)
-
-        # reconstruct plus/cross
-        incls   = thetas_raw[:, 3]
-        cosi    = np.cos(incls)[:,None]
-
+                # Forward pass - keep results on GPU
+                amp_out = self.amp_model(inp_t[:, :1], inp_t[:, 1:]).reshape(B, length)
+                phase_out = self.phase_model(inp_t[:, :1], inp_t[:, 1:]).reshape(B, length)
+                
+                # Keep on GPU until all batches are done
+                all_amp_gpu.append(amp_out)
+                all_phi_gpu.append(phase_out)
+        
+        # Concatenate all batches on GPU
+        Amp_norm_gpu = torch.cat(all_amp_gpu, dim=0)
+        phi_gpu = torch.cat(all_phi_gpu, dim=0)
+        
+        # Single transfer to CPU
+        Amp_mat = Amp_norm_gpu.cpu().numpy()
+        phi_mat = phi_gpu.cpu().numpy()
+        
+        # Vectorized post-processing
         amp_mat = unscale_target(Amp_mat, self.amp_scale)
-        h_plus  = amp_mat * ((1+cosi**2)/2) * np.cos(phi_mat)
-        h_cross = amp_mat * ( cosi ) * np.sin(phi_mat)
-
-        # wrap per sample
-        h_plus_list, h_cross_list = [], []
+        
+        # Extract inclinations and compute polarizations vectorized
+        incls = thetas_raw[:, 4]  # Note: this is column index 4 for inclination
+        cosi = np.cos(incls)[:, None]
+        
+        h_plus = amp_mat * ((1 + cosi**2) / 2) * np.cos(phi_mat)
+        h_cross = amp_mat * cosi * np.sin(phi_mat)
+        
+        # Create output objects
+        h_plus_list = []
+        h_cross_list = []
         for i in range(N):
             h_plus_list.append(TimeSeriesStrainData(
-                data        = h_plus[i],
-                uncertainty = h_plus[i],
-                epoch       = real_time[0],
-                sample_rate = delta_t,
-                time        = time_norm,
-                approximant = WAVEFORM
+                data=h_plus[i],
+                uncertainty=None,  # Fixed: was incorrectly set to h_plus[i]
+                epoch=real_time[0],
+                sample_rate=delta_t,
+                time=time_norm,
+                approximant=WAVEFORM
             ))
             h_cross_list.append(TimeSeriesStrainData(
-                data        = h_cross[i],
-                uncertainty = h_cross[i],
-                epoch       = real_time[0],
-                sample_rate = delta_t,
-                time        = time_norm,
-                approximant = WAVEFORM
+                data=h_cross[i],
+                uncertainty=None,  # Fixed: was incorrectly set to h_cross[i]
+                epoch=real_time[0],
+                sample_rate=delta_t,
+                time=time_norm,
+                approximant=WAVEFORM
             ))
-
+        
         return h_plus_list, h_cross_list
 
     def predict_with_uncertainty(
@@ -487,7 +695,9 @@ class WaveformPredictor:
 
         amp_last_linear = find_last_linear_layer(self.amp_model)
         phase_last_linear = find_last_linear_layer(self.phase_model)
+
         captured_features: dict = {}
+
         amp_hook = amp_last_linear.register_forward_hook(
             lambda module, inp, out: captured_features.update(amp_hidden=inp[0].detach()))
         phase_hook = phase_last_linear.register_forward_hook(
@@ -499,6 +709,7 @@ class WaveformPredictor:
                 input_tensor[:, :1], input_tensor[:, 1:])
             phase_means = self.phase_model(
                 input_tensor[:, :1], input_tensor[:, 1:])
+
         amp_hook.remove()
         phase_hook.remove()
 
@@ -522,6 +733,7 @@ class WaveformPredictor:
         # Unscale amplitude and propagate uncertainty
         amplitude = unscale_target(mean_log_amp, self.amp_scale)
         cos_inclination = np.cos(inclination)
+
         plus_mean = amplitude * \
             ((1 + cos_inclination**2) / 2) * np.cos(mean_phase)
         plus_uncertainty = np.sqrt(
@@ -529,6 +741,7 @@ class WaveformPredictor:
             (amplitude * ((1 + cos_inclination**2) / 2)
              * np.sin(mean_phase) * std_phase)**2,
         )
+
         cross_mean = amplitude * cos_inclination * np.sin(mean_phase)
         cross_uncertainty = np.sqrt(
             (cross_mean * std_log_amp)**2 +
@@ -561,115 +774,134 @@ class WaveformPredictor:
         sigma_level: int = 3,
     ) -> tuple[list[TimeSeriesStrainData], list[TimeSeriesStrainData]]:
         """
-        Using GPU batching, predict waveforms and uncertainties for multiple parameter sets.
-        Returns lists of TimeSeriesStrainData for plus and cross polarizations.
+        Optimized batch prediction with uncertainty using vectorized operations.
         """
         num_samples = thetas_raw.shape[0]
         length = self.waveform_length
         delta_t = self.delta_t
-        batch_size = batch_size or self.train_samples
+        
+        # Use optimal batch size
+        if batch_size is None:
+            batch_size = min(32, num_samples, self.train_samples if self.train_samples > 0 else 32)
 
         # Precompute time arrays
         time_array = np.linspace(-length * delta_t, 0.0, length)
-        normalized_time = 2 * (time_array + length *
-                               delta_t) / (length * delta_t) - 1
+        normalized_time = 2 * (time_array + length * delta_t) / (length * delta_t) - 1
 
+        # Vectorized feature computation for all samples
+        all_derived = self._compute_derived_vectorized(thetas_raw)
+        all_normalized = self._normalize_derived(all_derived)
+
+        # Find last linear layers
         def find_last_linear_layer(model: nn.Module) -> nn.Linear:
             return [layer for layer in model.modules() if isinstance(layer, nn.Linear) and layer.out_features == 1][-1]
 
         amp_last_linear = find_last_linear_layer(self.amp_model)
         phase_last_linear = find_last_linear_layer(self.phase_model)
 
-        plus_waveforms: list[TimeSeriesStrainData] = []
-        cross_waveforms: list[TimeSeriesStrainData] = []
-        feature_count = len(TRAIN_FEATURES)
+        # Storage for results
+        all_amp_mean = []
+        all_amp_std = []
+        all_phase_mean = []
+        all_phase_std = []
 
         for batch_start in range(0, num_samples, batch_size):
             batch_end = min(batch_start + batch_size, num_samples)
-            parameter_batch = thetas_raw[batch_start:batch_end]
-            current_batch_size = batch_end - batch_start
-
-            # Compute and normalize derived features
-            derived_matrix = np.stack(
-                [
-                    self._compute_derived(*params) for params in parameter_batch
-                ], axis=0,
-            )
-            normalized_matrix = self._normalize_derived(derived_matrix)
-
-            # Build flattened input
-            time_block = np.broadcast_to(
-                normalized_time, (current_batch_size, length))
-            feature_block = np.broadcast_to(
-                normalized_matrix[:, None, :],
-                (current_batch_size, length, feature_count),
-            )
-            flat_input = np.concatenate(
-                [time_block[..., None], feature_block], axis=-1)
-            flat_input = flat_input.reshape(-1,
-                                            1 + feature_count).astype(np.float32)
+            B = batch_end - batch_start
+            
+            # Get batch features
+            batch_features = all_normalized[batch_start:batch_end]
+            
+            # Build input efficiently
+            t_flat = np.tile(normalized_time, B)
+            p_flat = np.repeat(batch_features, length, axis=0)
+            flat_input = np.column_stack([t_flat, p_flat]).astype(np.float32)
+            
             input_tensor = torch.from_numpy(flat_input).to(self.device)
 
             # Hook and forward
             captured_features: dict = {}
+            
             amp_hook = amp_last_linear.register_forward_hook(
                 lambda module, inp, out: captured_features.update(amp_hidden=inp[0].detach()))
             phase_hook = phase_last_linear.register_forward_hook(
                 lambda module, inp, out: captured_features.update(phase_hidden=inp[0].detach()))
+
             with torch.no_grad():
-                log_amp_means = self.amp_model(
-                    input_tensor[:, :1], input_tensor[:, 1:])
-                phase_means = self.phase_model(
-                    input_tensor[:, :1], input_tensor[:, 1:])
+                log_amp_means = self.amp_model(input_tensor[:, :1], input_tensor[:, 1:])
+                phase_means = self.phase_model(input_tensor[:, :1], input_tensor[:, 1:])
+
             amp_hook.remove()
             phase_hook.remove()
 
-            # Reshape and compute variances
+            # Compute variances
             hidden_amp = captured_features['amp_hidden']
             hidden_phase = captured_features['phase_hidden']
-            variance_log_amp = (
-                hidden_amp**2 * self.amp_last_weight_variances).sum(1, True) + self.amp_last_bias_variance
-            variance_phase = (hidden_phase**2 * self.phase_last_weight_variances).sum(
-                1, True) + self.phase_last_bias_variance
+            
+            variance_log_amp = (hidden_amp**2 * self.amp_last_weight_variances).sum(1, True) + self.amp_last_bias_variance
+            variance_phase = (hidden_phase**2 * self.phase_last_weight_variances).sum(1, True) + self.phase_last_bias_variance
 
-            mean_log_amp = log_amp_means.cpu().numpy().reshape(current_batch_size, length)
-            std_log_amp = np.sqrt(variance_log_amp.cpu().numpy().reshape(
-                current_batch_size, length)) * sigma_level
-            mean_phase = phase_means.cpu().numpy().reshape(current_batch_size, length)
-            std_phase = np.sqrt(variance_phase.cpu().numpy().reshape(
-                current_batch_size, length)) * sigma_level
+            # Reshape and store - keep on GPU until the end
+            all_amp_mean.append(log_amp_means.reshape(B, length))
+            all_amp_std.append(torch.sqrt(variance_log_amp.reshape(B, length)) * sigma_level)
+            all_phase_mean.append(phase_means.reshape(B, length))
+            all_phase_std.append(torch.sqrt(variance_phase.reshape(B, length)) * sigma_level)
 
-            amplitude_matrix = unscale_target(mean_log_amp, self.amp_scale)
-            cos_inclinations = np.cos(parameter_batch[:, 4])[:, None]
+        # Concatenate all batches on GPU
+        mean_log_amp_gpu = torch.cat(all_amp_mean, dim=0)
+        std_log_amp_gpu = torch.cat(all_amp_std, dim=0)
+        mean_phase_gpu = torch.cat(all_phase_mean, dim=0)
+        std_phase_gpu = torch.cat(all_phase_std, dim=0)
+        
+        # Single transfer to CPU
+        mean_log_amp = mean_log_amp_gpu.cpu().numpy()
+        std_log_amp = std_log_amp_gpu.cpu().numpy()
+        mean_phase = mean_phase_gpu.cpu().numpy()
+        std_phase = std_phase_gpu.cpu().numpy()
 
-            plus_mean_block = amplitude_matrix * \
-                ((1 + cos_inclinations**2) / 2) * np.cos(mean_phase)
-            plus_uncertainty_block = np.sqrt(
-                (plus_mean_block * std_log_amp)**2 +
-                (amplitude_matrix * ((1 + cos_inclinations**2) / 2)
-                 * np.sin(mean_phase) * std_phase)**2,
-            )
-            cross_mean_block = amplitude_matrix * \
-                cos_inclinations * np.sin(mean_phase)
-            cross_uncertainty_block = np.sqrt(
-                (cross_mean_block * std_log_amp)**2 +
-                (amplitude_matrix * cos_inclinations *
-                 np.cos(mean_phase) * std_phase)**2,
-            )
+        # Vectorized amplitude scaling and polarization computation
+        amplitude_matrix = unscale_target(mean_log_amp, self.amp_scale)
+        cos_inclinations = np.cos(thetas_raw[:, 4])[:, None]
 
-            for i in range(current_batch_size):
-                plus_waveforms.append(
-                    TimeSeriesStrainData(
-                        data=plus_mean_block[i], uncertainty=plus_uncertainty_block[i],
-                        epoch=time_array[0], sample_rate=delta_t, time=normalized_time, approximant=WAVEFORM,
-                    ),
+        # Compute means
+        plus_mean_block = amplitude_matrix * ((1 + cos_inclinations**2) / 2) * np.cos(mean_phase)
+        cross_mean_block = amplitude_matrix * cos_inclinations * np.sin(mean_phase)
+
+        # Compute uncertainties
+        plus_uncertainty_block = np.sqrt(
+            (plus_mean_block * std_log_amp)**2 +
+            (amplitude_matrix * ((1 + cos_inclinations**2) / 2) * np.sin(mean_phase) * std_phase)**2
+        )
+        cross_uncertainty_block = np.sqrt(
+            (cross_mean_block * std_log_amp)**2 +
+            (amplitude_matrix * cos_inclinations * np.cos(mean_phase) * std_phase)**2
+        )
+
+        # Create output objects
+        plus_waveforms = []
+        cross_waveforms = []
+        
+        for i in range(num_samples):
+            plus_waveforms.append(
+                TimeSeriesStrainData(
+                    data=plus_mean_block[i],
+                    uncertainty=plus_uncertainty_block[i],
+                    epoch=time_array[0],
+                    sample_rate=delta_t,
+                    time=normalized_time,
+                    approximant=WAVEFORM,
                 )
-                cross_waveforms.append(
-                    TimeSeriesStrainData(
-                        data=cross_mean_block[i], uncertainty=cross_uncertainty_block[i],
-                        epoch=time_array[0], sample_rate=delta_t, time=normalized_time, approximant=WAVEFORM,
-                    ),
+            )
+            cross_waveforms.append(
+                TimeSeriesStrainData(
+                    data=cross_mean_block[i],
+                    uncertainty=cross_uncertainty_block[i],
+                    epoch=time_array[0],
+                    sample_rate=delta_t,
+                    time=normalized_time,
+                    approximant=WAVEFORM,
                 )
+            )
 
         return plus_waveforms, cross_waveforms
 
@@ -690,9 +922,9 @@ class WaveformPredictor:
         """
         length = waveform_length or self.waveform_length
         delta_t = sampling_dt or self.delta_t
+
         time_array = np.linspace(-length * delta_t, 0.0, length)
-        normalized_time = 2 * (time_array + length *
-                               delta_t) / (length * delta_t) - 1
+        normalized_time = 2 * (time_array + length * delta_t) / (length * delta_t) - 1
 
         derived_features = self._compute_derived(
             m1, m2, spin1_z, spin2_z, inclination, eccentricity)
@@ -714,58 +946,64 @@ class WaveformPredictor:
                 input_tensor[:, :1], input_tensor[:, 1:]).cpu().numpy().ravel()
 
         amplitude = unscale_target(log_amplitude_predictions, self.amp_scale)
+
         return time_array, amplitude, phase_predictions
 
     def batch_predict_debug(self, thetas_raw: np.ndarray, batch_size: int | None = None) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Like batch_predict, but returns raw time array, amplitude matrix, and phase matrix.
+        Optimized batch debug prediction with vectorized operations.
         Returns: time_array (length,), amplitude_matrix (num_samples, length), phase_matrix (num_samples, length)
         """
         num_samples = thetas_raw.shape[0]
         length = self.waveform_length
         delta_t = self.delta_t
-        batch_size = batch_size or self.train_samples
+        
+        # Use optimal batch size
+        if batch_size is None:
+            batch_size = min(32, num_samples, self.train_samples if self.train_samples > 0 else 32)
 
+        # Precompute time array
         time_array = np.linspace(-length * delta_t, 0.0, length)
-        normalized_time = 2 * (time_array + length *
-                               delta_t) / (length * delta_t) - 1
+        normalized_time = 2 * (time_array + length * delta_t) / (length * delta_t) - 1
 
-        amplitude_list: list[np.ndarray] = []
-        phase_list: list[np.ndarray] = []
+        # Vectorized feature computation
+        all_derived = self._compute_derived_vectorized(thetas_raw)
+        all_normalized = self._normalize_derived(all_derived)
+
+        # Storage for GPU results
+        amplitude_list_gpu = []
+        phase_list_gpu = []
 
         for batch_start in range(0, num_samples, batch_size):
             batch_end = min(batch_start + batch_size, num_samples)
-            parameter_batch = thetas_raw[batch_start:batch_end]
-
-            derived_matrix = np.stack(
-                [
-                    self._compute_derived(*params) for params in parameter_batch
-                ], axis=0,
-            )
-            normalized_matrix = self._normalize_derived(derived_matrix)
-
-            time_block = np.broadcast_to(
-                normalized_time, (parameter_batch.shape[0], length))
-            feature_block = np.broadcast_to(
-                normalized_matrix[:, None, :],
-                (parameter_batch.shape[0], length, len(TRAIN_FEATURES)),
-            )
-            flat_input = np.concatenate(
-                [time_block[..., None], feature_block], axis=-1)
-            flat_input = flat_input.reshape(-1, 1 +
-                                            len(TRAIN_FEATURES)).astype(np.float32)
+            B = batch_end - batch_start
+            
+            # Get batch features
+            batch_features = all_normalized[batch_start:batch_end]
+            
+            # Build input efficiently
+            t_flat = np.tile(normalized_time, B)
+            p_flat = np.repeat(batch_features, length, axis=0)
+            flat_input = np.column_stack([t_flat, p_flat]).astype(np.float32)
+            
             input_tensor = torch.from_numpy(flat_input).to(self.device)
 
             with torch.no_grad():
+                # Keep on GPU
                 amp_output_block = self.amp_model(
-                    input_tensor[:, :1], input_tensor[:, 1:]).cpu().numpy().reshape(-1, length)
+                    input_tensor[:, :1], input_tensor[:, 1:]).reshape(B, length)
                 phase_output_block = self.phase_model(
-                    input_tensor[:, :1], input_tensor[:, 1:]).cpu().numpy().reshape(-1, length)
+                    input_tensor[:, :1], input_tensor[:, 1:]).reshape(B, length)
+                
+                amplitude_list_gpu.append(amp_output_block)
+                phase_list_gpu.append(phase_output_block)
 
-            amplitude_list.append(unscale_target(
-                amp_output_block, self.amp_scale))
-            phase_list.append(phase_output_block)
+        # Concatenate on GPU
+        amp_gpu = torch.cat(amplitude_list_gpu, dim=0)
+        phase_gpu = torch.cat(phase_list_gpu, dim=0)
+        
+        # Single transfer to CPU and unscale
+        amplitude_matrix = unscale_target(amp_gpu.cpu().numpy(), self.amp_scale)
+        phase_matrix = phase_gpu.cpu().numpy()
 
-        amplitude_matrix = np.vstack(amplitude_list)
-        phase_matrix = np.vstack(phase_list)
         return time_array, amplitude_matrix, phase_matrix

@@ -204,7 +204,9 @@ def train_and_save(checkpoint_dir: str = 'checkpoints'):
         logger.info(f"Training on {features} features: {TRAIN_FEATURES}")
 
         logger.info(f"Getting params...")
-        model = "IMRPhenomD_NS"
+
+        model = "SPECTRE-SEOBNRv4-ECC-V0" # Set tuned model params
+
         amp_path = os.path.join(checkpoint_dir, model, 'amp_params.json')
         if not os.path.exists(amp_path):
             raise FileNotFoundError(

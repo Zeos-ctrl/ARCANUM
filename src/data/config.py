@@ -20,8 +20,8 @@ with open(_CONFIG_PATH) as f:
     _cfg = yaml.safe_load(f)
 
 # Pick which approximant profile to use
-# PROFILE = os.getenv("WF_PROFILE", "seobnrv4")
-PROFILE = os.getenv('WF_PROFILE', 'phenomd')
+PROFILE = os.getenv("WF_PROFILE", "seobnrv4")
+#PROFILE = os.getenv('WF_PROFILE', 'phenomd')
 PYCBC = _cfg['pycbc'][PROFILE]
 SAMPLING_RANGES = SimpleNamespace(**_cfg['sampling_ranges'])
 TRAINING = SimpleNamespace(**_cfg['training'])
@@ -115,6 +115,6 @@ CHECKPOINT_DIR = _cfg['paths']['checkpoint_dir']
 TRAIN_FEATURES = [
     'chirp_mass',
     'symmetric_mass_ratio',
-    #    "effective_spin",
-    #    "eccentricity",
+    "effective_spin",
+    "eccentricity",
 ]

@@ -1,30 +1,30 @@
 pycbc:
   seobnrv4:
     waveform_name:   "SEOBNRv4"
-    delta_t:         2056
+    delta_t:         2048
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 2056
+    waveform_length: 2048
 
   phenomd:
     waveform_name:   "IMRPhenomD"
-    delta_t:         1024
+    delta_t:         2048
     f_lower:         20.0
     detector_name:   "H1"
-    waveform_length: 4096
+    waveform_length: 2048
 
 model:
   amp_emb_hidden: [64,64]
-  amp_hidden: [256,256,256,256]
+  amp_hidden: [256,256,256]
   amp_banks: 3
   amp_dropout: 0.15
-  amp_lr: 0.001
+  amp_lr: 0.0005
   amp_clip: 3
   phase_emb_hidden: [64,64]
   phase_hidden: [256,256,256,256,256]
   phase_banks: 6
   phase_dropout: 0.15
-  phase_lr: 0.001
+  phase_lr: 0.0005
   phase_clip: 4
 
 sampling_ranges:
@@ -42,7 +42,7 @@ sampling_ranges:
 
 training:
   # Data & splitting
-  num_samples:    1000
+  num_samples:    10000
   val_split:      0.3
   random_seed:    42
 
@@ -52,7 +52,7 @@ training:
   weight_decay:   0.1
 
   # Batching & epochs
-  batch_size:     8192
+  batch_size:     32768
   num_epochs:     200
   patience:       50
   min_delta:      1e-6

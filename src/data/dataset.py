@@ -98,16 +98,6 @@ def sample_parameters(n, seed=None, method='lhs', gaussian_std_factor=4.0):
     else:
         raise ValueError(f"Unknown sampling method: {method}")
 
-    # Ensure m1 >= m2 by swapping where necessary.
-    # m1 is column 0, m2 is column 1.
-    m1 = samples[:, 0].copy()
-    m2 = samples[:, 1].copy()
-    swap_mask = m1 < m2
-    if np.any(swap_mask):
-        samples[swap_mask, 0] = m2[swap_mask]
-        samples[swap_mask, 1] = m1[swap_mask]
-        logger.debug(f"Swapped masses for {swap_mask.sum()} samples to enforce m1 >= m2")
-
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 

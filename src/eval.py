@@ -35,9 +35,9 @@ logger = logging.getLogger(__name__)
 # Get model
 try:
     wf = str(WAVEFORM).lower()
-    MODEL = 'SEOBNRv4' if wf == 'seobnrv4' else 'IMR'
+    MODEL = 'SEOBNRv4' if wf == 'seobnrv4' else 'IMR_SPIN'
 except Exception:
-    MODEL = 'IMR'
+    MODEL = 'IMR_SPIN'
 
 
 def pi_formatter(x, pos):
