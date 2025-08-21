@@ -1,9 +1,0 @@
-{
-  "learning_rate": 0.0009845041816798493,
-  "amp_hidden_size": 512,
-  "banks": 6,
-  "dropout": 0.15000000000000002,
-  "layers": 3,
-  "weight_decay": 1.0702214558185985e-08,
-  "grad_clip": 0.8622961796615807
-}

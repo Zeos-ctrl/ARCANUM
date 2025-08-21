@@ -199,3 +199,20 @@ plots/*
 checkpoints/*
 *.pt
 dataset.pt
+
+ # Documentation generation
+docs/api/
+docs/uml/
+.pydoc-markdown.yml
+*.pyc
+__pycache__/
+
+# Documentation artifacts
+docs/**/*.md
+!docs/index.md
+!docs/README.md
+
+# UML diagrams
+*.png
+*.svg
+!docs/images/** 
