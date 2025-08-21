@@ -909,7 +909,7 @@ class ComparativeBenchmarkRunner:
             comparison_results = self.run_comparative_analysis(
                 event, 
                 nwalkers=32, 
-                nsteps=1000,
+                nsteps=5000,
                 use_cpu_for_custom=use_cpu_for_custom
             )
             
@@ -1063,7 +1063,7 @@ if __name__ == "__main__":
     # Initialize your predictor
     waveform_predictor = WaveformPredictor(
         checkpoint_dir="checkpoints", 
-        model="IMR", 
+        model="SPECTRE-SEOBNRv4-ECC-V1", 
         device="cuda"
     )
     

@@ -28,7 +28,7 @@ model:
   phase_clip: 4
 
 sampling_ranges:
-  mass_min:     10.0
+  mass_min:     50.0
   mass_max:     100.0
   spin_mag_min: -0.7
   spin_mag_max:  0.7

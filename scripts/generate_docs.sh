@@ -65,23 +65,102 @@ try:
         print(mod.__doc__)
         print()
     
-    # List classes
-    classes = [name for name, obj in inspect.getmembers(mod) if inspect.isclass(obj) and obj.__module__ == "$module"]
+    # List classes with detailed information
+    classes = [(name, obj) for name, obj in inspect.getmembers(mod) if inspect.isclass(obj) and obj.__module__ == "$module"]
     if classes:
         print("## Classes")
-        for cls_name in classes:
-            print(f"- \`{cls_name}\`")
         print()
+        for cls_name, cls_obj in classes:
+            print(f"### \`{cls_name}\`")
+            print()
+            if cls_obj.__doc__:
+                # Clean up docstring indentation
+                docstring = inspect.cleandoc(cls_obj.__doc__)
+                print(f"{docstring}")
+                print()
+            
+            # List class methods
+            methods = [(name, obj) for name, obj in inspect.getmembers(cls_obj) 
+                      if inspect.ismethod(obj) or inspect.isfunction(obj)]
+            if methods:
+                print("**Methods:**")
+                for method_name, method_obj in methods:
+                    if not method_name.startswith('_'):  # Skip private methods
+                        try:
+                            sig = inspect.signature(method_obj)
+                            print(f"- \`{method_name}{sig}\`")
+                        except (ValueError, TypeError):
+                            print(f"- \`{method_name}(...)\`")
+                print()
     
-    # List functions
-    functions = [name for name, obj in inspect.getmembers(mod) if inspect.isfunction(obj) and obj.__module__ == "$module"]
+    # List functions with detailed information
+    functions = [(name, obj) for name, obj in inspect.getmembers(mod) if inspect.isfunction(obj) and obj.__module__ == "$module"]
     if functions:
         print("## Functions")
-        for func_name in functions:
-            print(f"- \`{func_name}\`")
         print()
+        for func_name, func_obj in functions:
+            print(f"### \`{func_name}\`")
+            print()
+            
+            # Get function signature
+            try:
+                sig = inspect.signature(func_obj)
+                print(f"**Signature:** \`{func_name}{sig}\`")
+                print()
+                
+                # Get parameters details
+                params = sig.parameters
+                if params:
+                    print("**Parameters:**")
+                    for param_name, param in params.items():
+                        param_info = f"- \`{param_name}\`"
+                        if param.annotation != inspect.Parameter.empty:
+                            param_info += f" ({param.annotation})"
+                        if param.default != inspect.Parameter.empty:
+                            param_info += f" = {repr(param.default)}"
+                        print(param_info)
+                    print()
+                
+                # Get return annotation
+                if sig.return_annotation != inspect.Signature.empty:
+                    print(f"**Returns:** \`{sig.return_annotation}\`")
+                    print()
+                    
+            except (ValueError, TypeError) as e:
+                print(f"**Signature:** \`{func_name}(...)\` (signature unavailable)")
+                print()
+            
+            # Get docstring
+            if func_obj.__doc__:
+                # Clean up docstring indentation
+                docstring = inspect.cleandoc(func_obj.__doc__)
+                print(f"**Description:**")
+                print()
+                print(f"{docstring}")
+                print()
+            else:
+                print("*No description available.*")
+                print()
+            
+            print("---")
+            print()
+    
+    # List module-level variables/constants
+    variables = [(name, obj) for name, obj in inspect.getmembers(mod) 
+                if not name.startswith('_') and not inspect.isfunction(obj) 
+                and not inspect.isclass(obj) and not inspect.ismodule(obj)]
+    if variables:
+        print("## Module Variables")
+        print()
+        for var_name, var_obj in variables:
+            var_type = type(var_obj).__name__
+            print(f"- \`{var_name}\` ({var_type})")
+        print()
+
 except Exception as e:
     print(f"Could not introspect module: {e}")
+    print()
+    print("**Note:** This module may have import dependencies that aren't available.")
 EOF
         fi
         

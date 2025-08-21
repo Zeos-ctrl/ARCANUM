@@ -117,7 +117,7 @@ jobs:
         git add ${{ env.OUTPUT_DIR }}
         
         # Create commit message
-        COMMIT_MSG="📚 Update documentation [skip ci]"
+        COMMIT_MSG="Update documentation [skip ci]"
         if [ -n "${{ github.event.head_commit.message }}" ]; then
           COMMIT_MSG="$COMMIT_MSG
         
@@ -189,7 +189,7 @@ jobs:
           
           const botComment = comments.find(comment => 
             comment.user.type === 'Bot' && 
-            comment.body.includes('## 📚 Documentation Update')
+            comment.body.includes('##  Documentation Update')
           );
           
           if (botComment) {
@@ -217,23 +217,23 @@ jobs:
         echo "" >> $GITHUB_STEP_SUMMARY
         
         if [ -d "${{ env.OUTPUT_DIR }}" ]; then
-          echo "✅ Documentation generated successfully" >> $GITHUB_STEP_SUMMARY
+          echo "Documentation generated successfully" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
           # Count generated files
           MD_COUNT=$(find ${{ env.OUTPUT_DIR }} -name "*.md" 2>/dev/null | wc -l || echo 0)
           UML_COUNT=$(find ${{ env.UML_DIR }} -name "*.png" 2>/dev/null | wc -l || echo 0)
           
-          echo "### 📊 Statistics" >> $GITHUB_STEP_SUMMARY
-          echo "- 📄 Markdown files generated: $MD_COUNT" >> $GITHUB_STEP_SUMMARY
-          echo "- 📈 UML diagrams generated: $UML_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "###  Statistics" >> $GITHUB_STEP_SUMMARY
+          echo "-  Markdown files generated: $MD_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "-  UML diagrams generated: $UML_COUNT" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
           
-          echo "### 📁 Output Structure" >> $GITHUB_STEP_SUMMARY
+          echo "### Output Structure" >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
           tree ${{ env.OUTPUT_DIR }} -I '__pycache__' 2>/dev/null || ls -la ${{ env.OUTPUT_DIR }}
           echo '```' >> $GITHUB_STEP_SUMMARY
         else
-          echo "❌ Documentation generation failed" >> $GITHUB_STEP_SUMMARY
+          echo "Documentation generation failed" >> $GITHUB_STEP_SUMMARY
         fi
 

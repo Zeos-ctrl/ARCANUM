@@ -208,8 +208,6 @@ docs/uml/
 __pycache__/
 
 # Documentation artifacts
-docs/**/*.md
-!docs/index.md
 !docs/README.md
 
 # UML diagrams
