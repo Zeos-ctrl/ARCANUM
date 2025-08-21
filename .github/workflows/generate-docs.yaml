@@ -73,21 +73,21 @@ jobs:
     - name: Generate documentation
       run: |
         # Make sure scripts directory exists
-        if [ ! -f "scripts/simple_doc_generator.py" ]; then
-          echo "Error: scripts/simple_doc_generator.py not found!"
+        if [ ! -f "scripts/generate_docs.py" ]; then
+          echo "Error: scripts/generate_docs.py not found!"
           echo "Please commit the documentation generator script to your repository."
           exit 1
         fi
         
-        # Run the simple documentation generator
+        # Run the documentation generator
         if [ "${{ inputs.skip_uml }}" == "true" ]; then
-          python scripts/simple_doc_generator.py \
+          python scripts/generate_docs.py \
             "${{ env.SOURCE_DIR }}" \
             "${{ env.OUTPUT_DIR }}" \
             --uml-dir "${{ env.UML_DIR }}" \
             --no-uml
         else
-          python scripts/simple_doc_generator.py \
+          python scripts/generate_docs.py \
             "${{ env.SOURCE_DIR }}" \
             "${{ env.OUTPUT_DIR }}" \
             --uml-dir "${{ env.UML_DIR }}"
