@@ -3,7 +3,7 @@ name: Generate Documentation
 on:
   # Trigger on push to main branches
   push:
-    branches: [main, develop]
+    branches: [main, dev]
     paths:
       - '**.py'
       - '.github/workflows/generate-docs.yaml'
