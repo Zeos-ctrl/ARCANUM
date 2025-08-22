@@ -6,11 +6,11 @@ echo ""
 # Create output directories
 mkdir -p docs/api/uml
 
-# Step 1: Generate UML diagrams
+# Generate UML diagrams
 echo "Step 1: Generating UML diagrams..."
-pyreverse -o png -p project -d docs/api/uml src/*.py 2>/dev/null && echo "  ✓ UML generated" || echo "  ✗ UML failed (install pylint)"
+pyreverse -o png -p project -d docs/api/uml src/*.py 2>/dev/null && echo "UML generated" || echo "UML failed (install pylint)"
 
-# Step 2: Generate documentation for each Python file
+# Generate documentation for each Python file
 echo ""
 echo "Step 2: Generating documentation..."
 echo ""
@@ -46,129 +46,234 @@ for py_file in src/*.py; do
         # Method 2: If file is still small, use Python introspection
         if [ $(wc -l < "$output_file") -lt 10 ]; then
             echo "Using Python introspection..."
-            python3 << EOF >> "$output_file"
-import sys
+            MODULE_NAME="$module" PY_FILE_PATH="$py_file" python3 << 'PYTHON_EOF' >> "$output_file"
+import ast
 import inspect
-import importlib.util
+import os
 
-# Add src to path
-sys.path.insert(0, 'src')
+# Get variables from environment
+module_name = os.environ.get('MODULE_NAME', '')
+py_file_path = os.environ.get('PY_FILE_PATH', '')
 
 try:
-    # Import the module
-    spec = importlib.util.spec_from_file_location("$module", "$py_file")
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
+    # Read and parse the Python file using AST
+    with open(py_file_path, 'r', encoding='utf-8') as f:
+        source_code = f.read()
     
-    # Document it
-    if mod.__doc__:
-        print(mod.__doc__)
+    # Parse the AST
+    tree = ast.parse(source_code)
+    
+    # Extract module docstring
+    module_docstring = ast.get_docstring(tree)
+    if module_docstring:
+        print(module_docstring)
         print()
     
-    # List classes with detailed information
-    classes = [(name, obj) for name, obj in inspect.getmembers(mod) if inspect.isclass(obj) and obj.__module__ == "$module"]
+    # Find classes and functions
+    classes = []
+    functions = []
+    
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef):
+            classes.append(node)
+        elif isinstance(node, ast.FunctionDef) and node.col_offset == 0:  # Top-level functions only
+            functions.append(node)
+    
+    # Process classes
     if classes:
-        print("## Classes")
+        print('## Classes')
         print()
-        for cls_name, cls_obj in classes:
-            print(f"### \`{cls_name}\`")
+        for cls_node in classes:
+            print('## ' + cls_node.name)
             print()
-            if cls_obj.__doc__:
-                # Clean up docstring indentation
-                docstring = inspect.cleandoc(cls_obj.__doc__)
-                print(f"{docstring}")
+            
+            # Class description
+            cls_docstring = ast.get_docstring(cls_node)
+            if cls_docstring:
+                print('**Description**: ' + cls_docstring)
                 print()
             
-            # List class methods
-            methods = [(name, obj) for name, obj in inspect.getmembers(cls_obj) 
-                      if inspect.ismethod(obj) or inspect.isfunction(obj)]
+            # Find constructor
+            init_method = None
+            methods = []
+            for item in cls_node.body:
+                if isinstance(item, ast.FunctionDef):
+                    if item.name == '__init__':
+                        init_method = item
+                    elif not item.name.startswith('_'):
+                        methods.append(item)
+            
+            # Constructor details
+            if init_method:
+                print('### Constructor')
+                print()
+                print('```python')
+                
+                # Build constructor signature
+                args = []
+                for arg in init_method.args.args:
+                    arg_str = arg.arg
+                    if arg.annotation:
+                        if hasattr(arg.annotation, 'id'):
+                            arg_str += ': ' + arg.annotation.id
+                        elif hasattr(arg.annotation, 'attr'):
+                            # Handle things like Optional[nn.Module]
+                            arg_str += ': ' + ast.unparse(arg.annotation)
+                    args.append(arg_str)
+                
+                # Add defaults
+                defaults = init_method.args.defaults
+                if defaults:
+                    num_defaults = len(defaults)
+                    for i, default in enumerate(defaults):
+                        arg_index = len(args) - num_defaults + i
+                        if hasattr(default, 'value'):
+                            args[arg_index] += ' = ' + str(default.value)
+                        elif hasattr(default, 'id'):
+                            args[arg_index] += ' = ' + default.id
+                        else:
+                            args[arg_index] += ' = ' + ast.unparse(default)
+                
+                # Return annotation
+                return_annotation = ''
+                if init_method.returns:
+                    if hasattr(init_method.returns, 'id'):
+                        return_annotation = ' -> ' + init_method.returns.id
+                    else:
+                        return_annotation = ' -> ' + ast.unparse(init_method.returns)
+                
+                print('def __init__(' + ', '.join(args) + ')' + return_annotation + ':')
+                print('```')
+                print()
+                
+                # Constructor docstring
+                init_docstring = ast.get_docstring(init_method)
+                if init_docstring:
+                    print(init_docstring)
+                    print()
+            
+            # Methods table
             if methods:
-                print("**Methods:**")
-                for method_name, method_obj in methods:
-                    if not method_name.startswith('_'):  # Skip private methods
-                        try:
-                            sig = inspect.signature(method_obj)
-                            print(f"- \`{method_name}{sig}\`")
-                        except (ValueError, TypeError):
-                            print(f"- \`{method_name}(...)\`")
+                print('### Methods')
+                print()
+                print('| Signature | Description |')
+                print('|-----------|-------------|')
+                
+                for method in methods:
+                    # Build method signature
+                    args = []
+                    for arg in method.args.args:
+                        arg_str = arg.arg
+                        if arg.annotation:
+                            if hasattr(arg.annotation, 'id'):
+                                arg_str += ': ' + arg.annotation.id
+                            else:
+                                arg_str += ': ' + ast.unparse(arg.annotation)
+                        args.append(arg_str)
+                    
+                    # Add defaults
+                    defaults = method.args.defaults
+                    if defaults:
+                        num_defaults = len(defaults)
+                        for i, default in enumerate(defaults):
+                            arg_index = len(args) - num_defaults + i
+                            if hasattr(default, 'value'):
+                                args[arg_index] += ' = ' + str(default.value)
+                            elif hasattr(default, 'id'):
+                                args[arg_index] += ' = ' + default.id
+                            else:
+                                args[arg_index] += ' = ' + ast.unparse(default)
+                    
+                    # Return annotation
+                    return_annotation = ''
+                    if method.returns:
+                        if hasattr(method.returns, 'id'):
+                            return_annotation = ' -> ' + method.returns.id
+                        else:
+                            return_annotation = ' -> ' + ast.unparse(method.returns)
+                    
+                    signature = method.name + '(' + ', '.join(args) + ')' + return_annotation
+                    
+                    # Get method description
+                    description = 'No description available.'
+                    method_docstring = ast.get_docstring(method)
+                    if method_docstring:
+                        # Get first line of docstring as description
+                        description = method_docstring.split('\n')[0].strip()
+                    
+                    print('| `' + signature + '` | ' + description + ' |')
                 print()
     
-    # List functions with detailed information
-    functions = [(name, obj) for name, obj in inspect.getmembers(mod) if inspect.isfunction(obj) and obj.__module__ == "$module"]
+    # Process functions
     if functions:
-        print("## Functions")
+        print('## Functions')
         print()
-        for func_name, func_obj in functions:
-            print(f"### \`{func_name}\`")
+        for func_node in functions:
+            print('## ' + func_node.name)
             print()
             
-            # Get function signature
-            try:
-                sig = inspect.signature(func_obj)
-                print(f"**Signature:** \`{func_name}{sig}\`")
-                print()
-                
-                # Get parameters details
-                params = sig.parameters
-                if params:
-                    print("**Parameters:**")
-                    for param_name, param in params.items():
-                        param_info = f"- \`{param_name}\`"
-                        if param.annotation != inspect.Parameter.empty:
-                            param_info += f" ({param.annotation})"
-                        if param.default != inspect.Parameter.empty:
-                            param_info += f" = {repr(param.default)}"
-                        print(param_info)
-                    print()
-                
-                # Get return annotation
-                if sig.return_annotation != inspect.Signature.empty:
-                    print(f"**Returns:** \`{sig.return_annotation}\`")
-                    print()
-                    
-            except (ValueError, TypeError) as e:
-                print(f"**Signature:** \`{func_name}(...)\` (signature unavailable)")
-                print()
+            print('```python')
+            
+            # Build function signature
+            args = []
+            for arg in func_node.args.args:
+                arg_str = arg.arg
+                if arg.annotation:
+                    if hasattr(arg.annotation, 'id'):
+                        arg_str += ': ' + arg.annotation.id
+                    else:
+                        arg_str += ': ' + ast.unparse(arg.annotation)
+                args.append(arg_str)
+            
+            # Add defaults
+            defaults = func_node.args.defaults
+            if defaults:
+                num_defaults = len(defaults)
+                for i, default in enumerate(defaults):
+                    arg_index = len(args) - num_defaults + i
+                    if hasattr(default, 'value'):
+                        args[arg_index] += ' = ' + str(default.value)
+                    elif hasattr(default, 'id'):
+                        args[arg_index] += ' = ' + default.id
+                    else:
+                        args[arg_index] += ' = ' + ast.unparse(default)
+            
+            # Return annotation
+            return_annotation = ''
+            if func_node.returns:
+                if hasattr(func_node.returns, 'id'):
+                    return_annotation = ' -> ' + func_node.returns.id
+                else:
+                    return_annotation = ' -> ' + ast.unparse(func_node.returns)
+            
+            print('def ' + func_node.name + '(' + ', '.join(args) + ')' + return_annotation + ':')
+            print('```')
+            print()
             
             # Get docstring
-            if func_obj.__doc__:
-                # Clean up docstring indentation
-                docstring = inspect.cleandoc(func_obj.__doc__)
-                print(f"**Description:**")
-                print()
-                print(f"{docstring}")
+            func_docstring = ast.get_docstring(func_node)
+            if func_docstring:
+                print('**Description**: ' + func_docstring)
                 print()
             else:
-                print("*No description available.*")
+                print('**Description**: No description available.')
                 print()
             
-            print("---")
+            print('---')
             print()
-    
-    # List module-level variables/constants
-    variables = [(name, obj) for name, obj in inspect.getmembers(mod) 
-                if not name.startswith('_') and not inspect.isfunction(obj) 
-                and not inspect.isclass(obj) and not inspect.ismodule(obj)]
-    if variables:
-        print("## Module Variables")
-        print()
-        for var_name, var_obj in variables:
-            var_type = type(var_obj).__name__
-            print(f"- \`{var_name}\` ({var_type})")
-        print()
 
 except Exception as e:
-    print(f"Could not introspect module: {e}")
+    print('Could not parse module: ' + str(e))
     print()
-    print("**Note:** This module may have import dependencies that aren't available.")
-EOF
+    print('**Note:** This module may have syntax errors or use unsupported Python features.')
+PYTHON_EOF
         fi
         
-        echo "  ✓ Generated: $output_file"
+        echo "Generated: $output_file"
     fi
 done
 
-# Step 3: Create index
+# Create index
 echo ""
 echo "Step 3: Creating index..."
 index_file="docs/api/index.md"
@@ -197,7 +302,7 @@ for png_file in docs/api/uml/*.png; do
     fi
 done
 
-echo "  ✓ Generated: $index_file"
+echo "Generated: $index_file"
 
 echo ""
 echo "===================================="
