@@ -430,8 +430,8 @@ class GWParameterEstimation:
         
         # Use bounded optimization
         bounds = [
-            (30.0, 100.0),   # m1
-            (30.0, 100.0),   # m2
+            (5.0, 100.0),   # m1
+            (5.0, 100.0),   # m2
             (-0.99, 0.99), # s1z
             (-0.99, 0.99), # s2z
             (0, np.pi),    # inclination
@@ -579,7 +579,7 @@ class GWParameterEstimation:
 class ComparativeBenchmarkRunner:
     """Run comparative benchmarks between custom model and PyCBC"""
     
-    def __init__(self, waveform_predictor=None, pycbc_approximant: str = 'SEOBNRv4'):
+    def __init__(self, waveform_predictor=None, pycbc_approximant: str = 'IMRPhenomD'):
         self.waveform_predictor = waveform_predictor
         self.pycbc_approximant = pycbc_approximant
         self.logger = logging.getLogger(self.__class__.__name__)
@@ -786,7 +786,6 @@ class ComparativeBenchmarkRunner:
             plot_datapoints=False,
             plot_density=True,
             plot_contours=True,
-            fill_contours=True,
             levels=[0.68, 0.95],
             contour_kwargs={'alpha': 0.5},
             contourf_kwargs={'alpha': 0.3}
@@ -802,7 +801,6 @@ class ComparativeBenchmarkRunner:
             plot_datapoints=False,
             plot_density=True,
             plot_contours=True,
-            fill_contours=True,
             levels=[0.68, 0.95],
             contour_kwargs={'alpha': 0.5},
             contourf_kwargs={'alpha': 0.3}
@@ -1063,7 +1061,7 @@ if __name__ == "__main__":
     # Initialize your predictor
     waveform_predictor = WaveformPredictor(
         checkpoint_dir="checkpoints", 
-        model="SPECTRE-SEOBNRv4-ECC-V1", 
+        model="SPECTRE-SEOBNRv4-V1", 
         device="cuda"
     )
     

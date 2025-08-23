@@ -32,13 +32,7 @@ from src.utils.utils import WaveformPredictor
 
 logger = logging.getLogger(__name__)
 
-# Get model
-try:
-    wf = str(WAVEFORM).lower()
-    MODEL = 'SEOBNRv4' if wf == 'seobnrv4' else 'IMR_SPIN'
-except Exception:
-    MODEL = 'IMR_SPIN'
-
+MODEL = 'SPECTRE-SEOBNRv4-ECC-V1'
 
 def pi_formatter(x, pos):
     """Format multiples of pi nicely."""
@@ -791,8 +785,8 @@ if __name__ == '__main__':
 
     approximants = ['SEOBNRv4', 'IMRPhenomD', 'SEOBNRv4HM', 'IMRPhenomXHM']
     surrogates = {
-        'IMR Model': WaveformPredictor('checkpoints', model='IMR', device=DEVICE),
-        'EOB model': WaveformPredictor('checkpoints', model='SEOBNRv4', device=DEVICE),
+        'IMR Model': WaveformPredictor('checkpoints', model='SPECTRE-IMRPhenomD-V1', device=DEVICE),
+        'EOB model': WaveformPredictor('checkpoints', model='SPECTRE-SEOBNRv4-V1', device=DEVICE),
     }
 
     results, summary_df = compare_surrogates_against_approximants(

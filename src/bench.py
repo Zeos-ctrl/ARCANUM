@@ -28,11 +28,7 @@ logger = logging.getLogger(__name__)
 warnings.filterwarnings('ignore', module='pycbc')
 
 # Get model
-try:
-    wf = str(WAVEFORM).lower()
-    MODEL = 'SEOBNRv4' if wf == 'seobnrv4' else 'IMR'
-except Exception:
-    MODEL = 'IMR'
+MODEL = 'SPECTRE-SEOBNRv4-ECC-V1'
 
 
 def benchmark(sample_counts, predictor: WaveformPredictor):

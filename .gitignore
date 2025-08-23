@@ -201,8 +201,6 @@ checkpoints/*
 dataset.pt
 
  # Documentation generation
-docs/api/
-docs/uml/
 .pydoc-markdown.yml
 *.pyc
 __pycache__/
