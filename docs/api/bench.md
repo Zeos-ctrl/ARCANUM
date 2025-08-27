@@ -8,18 +8,39 @@ Source: `src/bench.py`
 
 ## Functions
 
-## benchmark
+## benchmark_single
 
 ```python
-def benchmark(sample_counts, predictor: WaveformPredictor):
+def benchmark_single(sample_counts, predictor: WaveformPredictor, waveform = SEOBNRv4, label = Model):
 ```
 
-**Description**: For each n in sample_counts:
-  - Generate n waveforms via your generate_data() (clean & tapered)
-  - Predict n waveforms via the DNN (single and batch)
-  - Time both operations
-  - Compute mean match between true & predicted strains
-  - Save interactive scatter plot and histogram with KDE
+**Description**: Run benchmark for a single predictor/waveform combination.
+Returns results dictionary and match arrays for plotting.
+
+---
+
+## plot_comparison
+
+```python
+def plot_comparison(matches_dict, sample_counts, out_dir = plots/benchmark):
+```
+
+**Description**: Create publication-quality comparison plots for multiple models.
+
+Args:
+    matches_dict: Dictionary with structure {model_label: {n: {'single': matches, 'batch': matches}}}
+    sample_counts: List of sample counts
+    out_dir: Output directory for plots
+
+---
+
+## create_statistics_table
+
+```python
+def create_statistics_table(matches_dict, sample_counts, out_path = benchmark_statistics.json):
+```
+
+**Description**: Create a statistics table for the paper.
 
 ---
 
