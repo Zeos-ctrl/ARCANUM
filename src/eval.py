@@ -32,7 +32,22 @@ from src.utils.utils import WaveformPredictor
 
 logger = logging.getLogger(__name__)
 
-MODEL = 'SPECTRE-SEOBNRv4-ECC-V1'
+MODEL = 'SPECTRE-IMRPhenomD-ECC-V1'
+
+plt.rcParams.update({
+    'font.size': 16,              # Base font size
+    'axes.titlesize': 18,         # Subplot titles
+    'axes.labelsize': 16,         # Axis labels
+    'xtick.labelsize': 14,        # X-axis tick labels
+    'ytick.labelsize': 14,        # Y-axis tick labels
+    'legend.fontsize': 14,        # Legend
+    'figure.titlesize': 20,       # Figure title
+    'font.family': 'serif',       # Use serif font (typical for papers)
+    'font.serif': ['Times New Roman', 'DejaVu Serif'],
+    'text.usetex': False,         # Set to True if you have LaTeX
+    'axes.linewidth': 1.5,        # Thicker axes
+    'lines.linewidth': 2,         # Thicker lines
+})
 
 def pi_formatter(x, pos):
     """Format multiples of pi nicely."""
@@ -57,7 +72,7 @@ def pi_formatter(x, pos):
 def evaluate():
     logger.info('Starting single‐waveform evaluation and visualization…')
     pred = WaveformPredictor('checkpoints', model=MODEL, device=DEVICE)
-    data = generate_data(samples=10)
+    data = generate_data(samples=10, waveform="IMRPhenomD")
 
     i = np.random.randint(0, 10)
     m1, m2, chi1z, chi2z, incl, ecc = data.thetas[i]
@@ -96,72 +111,85 @@ def evaluate():
                  f"waveform match = {match}")
     logger.info(f"Evaluating for parameters: {title_str}")
     logger.info(f"Using {WAVEFORM} approximant...")
-    fig.suptitle(f"{title_str}", fontsize=16)
+    fig.suptitle(f"{title_str}", fontsize=24)
 
     # Top row: true vs pred
     ax = axes[0, 0]
     ax.plot(time, h_true,     label='True', linewidth=1)
     ax.plot(time, h_pred, '--', label='Pred', linewidth=1)
-    ax.set_title('Strain $h_+(t)$')
-    ax.set_ylabel('Strain')
-    ax.legend()
+    ax.set_title('Strain $h_+(t)$', fontsize=18)
+    ax.set_ylabel('Strain', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Amplitude
     ax = axes[0, 1]
     ax.plot(time, amp_true,     label='True', linewidth=1)
     ax.plot(time, amp_pred, '--', label='Pred', linewidth=1)
-    ax.set_title('Amplitude')
-    ax.legend()
+    ax.set_title('Amplitude', fontsize=18)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Unwrapped phase
     ax = axes[0, 2]
     ax.plot(time, phi_true,     label='True', linewidth=1)
     ax.plot(time, phi_pred, '--', label='Pred', linewidth=1)
-    ax.set_title('Phase (unwrapped)')
-    ax.set_ylabel('Phase [rad]')
-    ax.legend()
+    ax.set_title('Phase (unwrapped)', fontsize=18)
+    ax.set_ylabel('Phase [rad]', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Wrapped phase
     ax = axes[0, 3]
     ax.plot(time, phi_wr_true,     label='True', linewidth=1)
     ax.plot(time, phi_wr_pred, '--', label='Pred', linewidth=1)
-    ax.set_title(r'Phase (wrapped $0 -> 2\pi$)')
-    ax.set_ylabel('Phase')
+    ax.set_title(r'Phase (wrapped $0 -> 2\pi$)', fontsize=18)
+    ax.set_ylabel('Phase', fontsize=16)
     ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
     ax.set_ylim(0, 2*np.pi)
     ax.set_xlim(-0.6, -0.4)
-    ax.legend()
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Bottom row: residuals
     # Strain residual
     ax = axes[1, 0]
     ax.plot(time, h_pred - h_true, color='C2', linewidth=1)
-    ax.set_title('Strain Residual')
-    ax.set_xlabel('Time [s]')
+    ax.set_title('Strain Residual', fontsize=18)
+    ax.set_xlabel('Time [s]', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Amplitude residual
     ax = axes[1, 1]
     ax.plot(time, amp_pred - amp_true, color='C2', linewidth=1)
-    ax.set_title('Amplitude Residual')
-    ax.set_xlabel('Time [s]')
+    ax.set_title('Amplitude Residual', fontsize=18)
+    ax.set_xlabel('Time [s]', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Unwrapped phase residual
     ax = axes[1, 2]
     ax.plot(time, phi_pred - phi_true, color='C2', linewidth=1)
-    ax.set_title('Phase Residual (unwrapped)')
-    ax.set_ylabel('Delta Phase [rad]')
-    ax.set_xlabel('Time [s]')
+    ax.set_title('Phase Residual (unwrapped)', fontsize=18)
+    ax.set_ylabel('Delta Phase [rad]', fontsize=16)
+    ax.set_xlabel('Time [s]', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     # Wrapped phase residual
     ax = axes[1, 3]
     ax.plot(time, phi_res_wrapped, color='C2', linewidth=1)
-    ax.set_title(r'Phase Residual (wrapped $\pm \pi$)')
-    ax.set_ylabel(r'Delta Phase mod $2\pi$ [rad]')
+    ax.set_title(r'Phase Residual (wrapped $\pm \pi$)', fontsize=18)
+    ax.set_ylabel(r'Delta Phase mod $2\pi$ [rad]', fontsize=16)
     ax.set_ylim(-np.pi, np.pi)
     ax.yaxis.set_major_locator(mticker.MultipleLocator(np.pi/2))
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(pi_formatter))
-    ax.set_xlabel('Time [s]')
+    ax.set_xlim(-0.6, -0.4)
+    ax.set_xlabel('Time [s]', fontsize=16)
+    ax.legend(fontsize=14)
+    ax.tick_params(labelsize=14)
 
     plt.tight_layout(rect=[0, 0, 1, 0.95])
     output_dir = 'plots'
@@ -395,7 +423,7 @@ def plot_prediction_uncertainty(
     )
 
     # Plot
-    fig, ax = plt.subplots(figsize=(10, 4))
+    fig, ax = plt.subplots(figsize=(16, 8))
     time = plus_strain.time
     mean = plus_strain.data
     sigma = plus_strain.uncertainty
@@ -410,12 +438,14 @@ def plot_prediction_uncertainty(
         label=rf"$\pm{set_sigma_level}\sigma $band",
     )
     ax.set_title(
-        rf"Prediction $\pm1\sigma$ | $m_1$={mass_1:.1f}, $m_2$={mass_2:.1f}, "
+        rf"Prediction $\pm{set_sigma_level}\sigma$ | $m_1$={mass_1:.1f}, $m_2$={mass_2:.1f}, "
         rf"$χ_1z$={spin1_z:.2f}, $χ_2z$={spin2_z:.2f}, incl={inclination:.2f}, ecc={eccentricity:.2f}",
+        fontsize=28
     )
-    ax.set_xlabel('Time [s]')
-    ax.set_ylabel('Strain h₊')
-    ax.legend(loc='best')
+    ax.set_xlabel('Time [s]', fontsize=18)
+    ax.set_ylabel('Strain h₊', fontsize=18)
+    ax.legend(loc='best', fontsize=14)
+    ax.tick_params(labelsize=14)
     ax.grid(True)
 
     # Save and close
@@ -785,8 +815,8 @@ if __name__ == '__main__':
 
     approximants = ['SEOBNRv4', 'IMRPhenomD', 'SEOBNRv4HM', 'IMRPhenomXHM']
     surrogates = {
-        'IMR Model': WaveformPredictor('checkpoints', model='SPECTRE-IMRPhenomD-V1', device=DEVICE),
-        'EOB model': WaveformPredictor('checkpoints', model='SPECTRE-SEOBNRv4-V1', device=DEVICE),
+        'IMR Model': WaveformPredictor('checkpoints', model='SPECTRE-IMRPhenomD-ECC-V1', device=DEVICE),
+        'EOB model': WaveformPredictor('checkpoints', model='SPECTRE-SEOBNRv4-ECC-V1', device=DEVICE),
     }
 
     results, summary_df = compare_surrogates_against_approximants(

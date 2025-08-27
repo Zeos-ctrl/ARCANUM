@@ -205,7 +205,7 @@ def train_and_save(checkpoint_dir: str = 'checkpoints'):
 
         logger.info(f"Getting params...")
 
-        model = "SPECTRE-SEOBNRv4-ECC-V0" # Set tuned model params
+        model = "SPECTRE-SEOBNRv4-V1" # Set tuned model params
 
         amp_path = os.path.join(checkpoint_dir, model, 'amp_params.json')
         if not os.path.exists(amp_path):
@@ -291,4 +291,3 @@ if __name__ == '__main__':
 
     logger.info(f"Using {WAVEFORM} approximant...")
     train_and_save(CHECKPOINT_DIR)
-#    notify_discord("3‑stage training complete!")

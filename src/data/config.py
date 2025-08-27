@@ -115,6 +115,6 @@ CHECKPOINT_DIR = _cfg['paths']['checkpoint_dir']
 TRAIN_FEATURES = [
     'chirp_mass',
     'symmetric_mass_ratio',
-    "effective_spin",
-    "eccentricity",
+#    "effective_spin",
+#    "eccentricity",
 ]

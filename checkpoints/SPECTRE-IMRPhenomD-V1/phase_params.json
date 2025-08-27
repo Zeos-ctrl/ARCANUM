@@ -1,8 +1,9 @@
 {
+  "learning_rate": 0.0009985130127648596,
   "phase_hidden_size": 256,
-  "banks": 6,
-  "dropout": 0.4,
+  "banks": 5,
+  "dropout": 0.1,
   "layers": 5,
-  "weight_decay": 0.0016934155410667966,
-  "grad_clip": 4.037993176805661
+  "weight_decay": 1.1176940539926952e-07,
+  "grad_clip": 0.9719803543777017
 }
