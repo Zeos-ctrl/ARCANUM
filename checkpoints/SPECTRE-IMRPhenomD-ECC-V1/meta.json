@@ -1,0 +1,1 @@
+{"waveform_length": 2048, "delta_t": 0.00048828125, "amp_scale": 1.2693793751591232e-18, "train_samples": 10000, "hessian_noise_var": 1.0, "in_dim": ["chirp_mass", "symmetric_mass_ratio", "effective_spin", "eccentricity"], "in_dim_len": 4}

@@ -197,3 +197,18 @@ cython_debug/
 logs/*
 plots/*
 checkpoints/*
+*.pt
+dataset.pt
+
+ # Documentation generation
+.pydoc-markdown.yml
+*.pyc
+__pycache__/
+
+# Documentation artifacts
+!docs/README.md
+
+# UML diagrams
+*.png
+*.svg
+!docs/images/** 

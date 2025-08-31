@@ -1,152 +1,251 @@
 # General Utils
-import sys
-import psutil
+from __future__ import annotations
+
 import logging
-import numpy as np
-from scipy.stats import qmc
-from scipy.signal import hilbert
+import sys
 from dataclasses import dataclass
-from scipy.signal.windows import tukey
-from scipy.fft import fft, ifft
 
-# PyCBC imports
+import numpy as np
+import psutil
 from pycbc import noise
-from pycbc.types import TimeSeries, FrequencySeries
-from pycbc.waveform import get_td_waveform
 from pycbc.psd import aLIGOZeroDetHighPower
+from pycbc.types import FrequencySeries
+from pycbc.types import TimeSeries
+from pycbc.waveform import get_td_waveform
+from scipy.fft import fft
+from scipy.fft import ifft
+from scipy.fft import rfft
+from scipy.interpolate import interp1d
+from scipy.signal import hilbert
+from scipy.signal.windows import tukey
+from scipy.stats import qmc
+from sklearn.model_selection import train_test_split
+from torch.utils.data import DataLoader
+from torch.utils.data import TensorDataset
 
-# Libraries
 from src.data.config import *
+# PyCBC imports
+# Libraries
 
 logger = logging.getLogger(__name__)
+
 
 @dataclass
 class GeneratedDataset:
     inputs: np.ndarray        # (N_total, 6)  ← was 7
     targets_A: np.ndarray     # (N_total, 1)
     targets_phi: np.ndarray   # (N_total, 1)
-    time_unscaled: np.ndarray # (L,)
+    time_unscaled: np.ndarray  # (L,)
     thetas: np.ndarray        # raw thetas (N,6), for reference
-    log_amp_min: float
-    log_amp_max: float
+    amp_scale: float          # scalar for amplitude
     phi_unwrap: np.ndarray    # (N,L)
     param_means: np.ndarray   # (5,)
     param_stds: np.ndarray    # (5,)
     theta_norm: np.ndarray    # (N,5)
     t_norm_array: np.ndarray  # (L,)
 
+
 def sizeof_numpy_array(arr):
     return arr.nbytes
+
 
 def sizeof_tensor(t):
     return t.element_size() * t.nelement()
 
-def sample_parameters(n, seed=None, method="lhs"):
+def sample_parameters(n, seed=None, method='lhs', gaussian_std_factor=4.0):
     """
-    Sample n parameter sets from either Latin Hypercube Sampling (default) or uniform random sampling.
+    Sample n parameter sets using one of three methods: Latin Hypercube Sampling (LHS), uniform random, or Gaussian.
 
     Args:
         n (int): Number of samples.
         seed (int or None): Random seed for reproducibility.
-        method (str): Sampling method, either "lhs" (default) or "uniform".
+        method (str): Sampling method, one of:
+            - "lhs": Latin Hypercube Sampling
+            - "uniform": Uniform random sampling
+            - "gaussian": Gaussian sampling
+        gaussian_std_factor (float): Factor to divide the parameter range by to get the Gaussian std.
+            std = (high - low) / gaussian_std_factor
 
     Returns:
         np.ndarray: Sampled parameters, shape (n, 6)
     """
     logger.debug(f"Sampling {n} parameter sets using {method} method...")
 
-    lows  = np.array([MASS_MIN, MASS_MIN, SPIN_MIN, SPIN_MIN, INCLINATION_MIN, ECC_MIN])
-    highs = np.array([MASS_MAX, MASS_MAX, SPIN_MAX, SPIN_MAX, INCLINATION_MAX, ECC_MAX])
-    dim   = 6
+    # Define bounds for each parameter
+    lows = np.array([MASS_MIN, MASS_MIN, SPIN_MIN,
+                    SPIN_MIN, INCLINATION_MIN, ECC_MIN])
+    highs = np.array([MASS_MAX, MASS_MAX, SPIN_MAX,
+                     SPIN_MAX, INCLINATION_MAX, ECC_MAX])
+    dim = lows.size
 
     rng = np.random.default_rng(seed)
 
-    if method == "lhs":
+    if method == 'lhs':
         sampler = qmc.LatinHypercube(d=dim, seed=seed)
         sample = sampler.random(n)
         samples = qmc.scale(sample, lows, highs)
-    elif method == "uniform":
+
+    elif method == 'uniform':
         samples = rng.uniform(lows, highs, size=(n, dim))
+
+    elif method == 'gaussian':
+        means = (lows + highs) / 2.0
+        stds = (highs - lows) / gaussian_std_factor
+
+        raw = rng.normal(loc=means, scale=stds, size=(n, dim))
+        samples = np.clip(raw, lows, highs)
+
     else:
         raise ValueError(f"Unknown sampling method: {method}")
 
     logger.debug(f"Sampled parameters shape: {samples.shape}")
     return samples
 
-def make_waveform(theta):
-    """Generate a clean (noise-free) waveform for parameters theta."""
-    logger.debug(f"Generating clean waveform with theta={theta}")
+def _resample_and_fill(h: np.ndarray, target_len: int, tolerance: float = 1e-20) -> np.ndarray:
+    """
+    Trim leading/trailing zeros (or near-zero values) from h, then interpolate the
+    non-zero segment uniformly back to length `target_len`.
+    """
+    # Find non-zero region with tolerance
+    nz = np.where(np.abs(h) > tolerance)[0]
+    if nz.size == 0:
+        # All values are near zero? Return zeros
+        return np.zeros(target_len, dtype=h.dtype)
+    start, end = nz[0], nz[-1]
+    segment = h[start:end+1]
+    # Build old & new sample grids
+    old_x = np.linspace(0, 1, len(segment))
+    new_x = np.linspace(0, 1, target_len)
+    # Linear interpolation (extrapolate just in case)
+    f = interp1d(old_x, segment, kind='linear', fill_value='extrapolate')
+    return f(new_x)
+
+
+def make_waveform(theta, waveform=WAVEFORM):
+    """Generate a *clean* waveform of exactly WAVEFORM_LENGTH samples."""
     m1, m2, chi1z, chi2z, incl, ecc = theta
     hp, _ = get_td_waveform(
         mass1=m1, mass2=m2,
         spin1z=chi1z, spin2z=chi2z,
         inclination=incl, eccentricity=ecc,
         delta_t=DELTA_T, f_lower=F_LOWER,
-        approximant=WAVEFORM
+        approximant=waveform,
     )
     h_plus = hp.numpy()
-    L = len(h_plus)
-    if L >= WAVEFORM_LENGTH:
-        return h_plus[-WAVEFORM_LENGTH:]
-    else:
-        pad_amt = WAVEFORM_LENGTH - L
-        return np.pad(h_plus, (pad_amt, 0), mode="constant")
+
+    # now trim & resample onto the full window
+    return _resample_and_fill(h_plus, WAVEFORM_LENGTH)
+
 
 def make_noisy_waveform(theta, psd_arr, snr_target, seed=None):
     """
-    Generate a noisy waveform at (approximate) SNR=snr_target,
-    but ensure we always use WAVEFORM_LENGTH samples.
+    Generates waveform, whitens/scales, adds noise built from the one-sided PSD,
+    then trims & resamples to WAVEFORM_LENGTH (assumes helper _resample_and_fill exists).
     """
-    # get exactly WAVEFORM_LENGTH data via your helper
-    h_clean = make_waveform(theta)  # now shape == (WAVEFORM_LENGTH,)
+    m1, m2, chi1z, chi2z, incl, ecc = theta
+    hp, _ = get_td_waveform(
+        mass1=m1, mass2=m2,
+        spin1z=chi1z, spin2z=chi2z,
+        inclination=incl, eccentricity=ecc,
+        delta_t=DELTA_T, f_lower=F_LOWER,
+        approximant=WAVEFORM,
+    )
+    h_clean = hp.numpy()
+    N = len(h_clean)
 
-    # manual whiten in freq domain
-    Hf = fft(h_clean)
-    sqrt_psd = np.sqrt(psd_arr) + 1e-30
+    # Work in rfft-space (one-sided) so shape = N//2 + 1
+    Hf = rfft(h_clean)
+    flen = Hf.shape[0]
+
+    psd_arr = np.asarray(psd_arr, dtype=float)
+
+    # Convert psd_arr to one-sided PSD of length flen if needed
+    if psd_arr.shape[0] == flen:
+        psd_one_sided = psd_arr
+    elif psd_arr.shape[0] == N:
+        psd_one_sided = psd_arr[:flen]
+    else:
+        raise ValueError(
+            f"psd_arr length {psd_arr.shape[0]} is incompatible with waveform length N={N}; "
+            f"expected {flen} (one-sided) or {N} (two-sided).",
+        )
+
+    # ensure non-zero positive PSD entries
+    psd_one_sided = np.where(psd_one_sided <= 0.0, np.inf, psd_one_sided)
+    sqrt_psd = np.sqrt(psd_one_sided) + 1e-30
+
+    # whiten in frequency domain and return to time domain
     Hf_white = Hf / sqrt_psd
-    h_white  = np.real(ifft(Hf_white))
+    h_white = np.real(irfft(Hf_white, n=N))
 
-    # compute native whitened -> SNR
+    # compute SNR of clean whitened signal and scale
     rho_clean = np.sqrt(np.sum(h_white**2) * DELTA_T)
-    scale     = (snr_target/rho_clean) if rho_clean>0 else 1.0
-
-    # scale the **clean** fixed‑length waveform
+    scale = (snr_target / rho_clean) if rho_clean > 0 else 1.0
     h_scaled = h_clean * scale
 
-    # add PSD‐matched noise
+    # noise_from_psd expects one-sided PSD (length N//2 + 1)
     noise_td = noise.noise_from_psd(
-        WAVEFORM_LENGTH, DELTA_T, psd_arr, seed=seed
-    ).numpy()
+        N, DELTA_T, psd_one_sided, seed=seed).numpy()
+    h_noisy = h_scaled + noise_td
 
-    return h_scaled + noise_td
+    # trim & resample to target length
+    return _resample_and_fill(h_noisy, WAVEFORM_LENGTH)
+
+
+def compute_global_scale(inst_target: np.ndarray, target_peak: float = 1.0) -> float:
+    """
+    Given a 2D array of instantaneous targets (shape [N_samples, L]),
+    compute a single scale factor so that the largest absolute value
+    across the entire set becomes `target_peak`.
+    """
+    max_peak = np.max(inst_target)
+    return max_peak / target_peak
+
+
+def scale_target(inst_target: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Divide all instantaneous targets by `scale`.
+    """
+    return inst_target / scale
+
+
+def unscale_target(scaled_target: np.ndarray, scale: float) -> np.ndarray:
+    """
+    Recover original targets by multiplying by `scale`.
+    """
+    return scaled_target * scale
+
 
 def generate_data(
     clean: bool = CLEAN,
     samples: int = NUM_SAMPLES,
     alpha: float = 0.1,
     snr_min: float = SNR_MIN,
-    snr_max: float = SNR_MAX
+    snr_max: float = SNR_MAX,
+    waveform: str = WAVEFORM,
+    seed: int = None,
 ) -> GeneratedDataset:
     logger.info(f"Generating {'clean' if clean else 'noisy'} dataset...")
-    thetas = sample_parameters(samples)  # (N,6)
+    thetas = sample_parameters(samples, seed=seed)  # (N,6)
 
     # enforce zero‐spin if that feature’s off
-    if "effective_spin" not in TRAIN_FEATURES:
-        thetas[:,2] = 0.0
-        thetas[:,3] = 0.0
-    if "inclination" not in TRAIN_FEATURES:
-        thetas[:,4] = 0.01
-    if "eccentricity" not in TRAIN_FEATURES:
-        thetas[:,5] = 0.0
+    if 'effective_spin' not in TRAIN_FEATURES:
+        thetas[:, 2] = 0.0
+        thetas[:, 3] = 0.0
+    if 'eccentricity' not in TRAIN_FEATURES:
+        thetas[:, 5] = 0.0
+
+    # Inclination is a non trained feature now
+    thetas[:, 4] = np.pi/2
 
     # compute derived features map
     m1, m2, chi1z, chi2z, incl, ecc = thetas.T
     derived_map = {
-        "chirp_mass":           (m1*m2)**(3/5) / (m1+m2)**(1/5),
-        "symmetric_mass_ratio": (m1*m2) / (m1+m2)**2,
-        "effective_spin":       (m1*chi1z + m2*chi2z) / (m1+m2),
-        "inclination":          incl,
-        "eccentricity":         ecc
+        'chirp_mass':           (m1*m2)**(3/5) / (m1+m2)**(1/5),
+        'symmetric_mass_ratio': (m1*m2) / (m1+m2)**2,
+        'effective_spin':       (m1*chi1z + m2*chi2z) / (m1+m2),
+        'inclination':          incl,
+        'eccentricity':         ecc,
     }
     D = len(TRAIN_FEATURES)
     thetas_D = np.stack([derived_map[f] for f in TRAIN_FEATURES], axis=1)
@@ -155,7 +254,7 @@ def generate_data(
     delta_f = 1.0 / (WAVEFORM_LENGTH * DELTA_T)
     psd_arr = aLIGOZeroDetHighPower(WAVEFORM_LENGTH, delta_f, F_LOWER)
 
-    all_log_amp    = np.zeros((samples, WAVEFORM_LENGTH))
+    all_amp = np.zeros((samples, WAVEFORM_LENGTH))
     all_phi_unwrap = np.zeros((samples, WAVEFORM_LENGTH))
     eps = 1e-30
 
@@ -163,14 +262,15 @@ def generate_data(
         theta_raw = thetas[i]
         if clean:
             # no noise
-            hp_seg = make_waveform(theta_raw)
+            hp_seg = make_waveform(theta_raw, waveform=waveform)
         else:
             # pick a random SNR in [snr_min, snr_max]
             snr_target = float(np.random.uniform(snr_min, snr_max))
-            hp_seg = make_noisy_waveform(theta_raw, psd_arr, snr_target, seed=i)
+            hp_seg = make_noisy_waveform(
+                theta_raw, psd_arr, snr_target, seed=i)
 
         # taper with Tukey
-        nz = np.where(np.abs(hp_seg)>0)[0]
+        nz = np.where(np.abs(hp_seg) > 0)[0]
         if nz.size:
             start, end = nz[0], nz[-1]+1
             window = np.zeros(WAVEFORM_LENGTH)
@@ -178,32 +278,36 @@ def generate_data(
             hp_seg = hp_seg * window
 
         # analytic → inst amp & phase
-        analytic     = hilbert(hp_seg)
-        inst_amp     = np.abs(analytic) + eps
-        all_log_amp[i]    = np.log10(inst_amp)
-        all_phi_unwrap[i] = np.unwrap(np.angle(analytic))
+        analytic = hilbert(hp_seg)
+        inst_amp = np.abs(analytic) + eps
+        all_amp[i] = inst_amp
+        # adjust the phase to start at 0
+        phi = np.unwrap(np.angle(analytic))
+        all_phi_unwrap[i] = phi - phi[0]
 
     # normalize amp -> [0,1]
-    log_amp_min = all_log_amp.min()
-    log_amp_max = all_log_amp.max()
-    all_log_amp_norm = (all_log_amp - log_amp_min)/(log_amp_max-log_amp_min)
+    scale = compute_global_scale(all_amp, target_peak=1.0)
+    all_amp_scaled = scale_target(all_amp, scale)
 
     # time grids
     time_unscaled = np.linspace(-WAVEFORM_LENGTH*DELTA_T, 0.0, WAVEFORM_LENGTH)
-    t_norm = 2*(time_unscaled - time_unscaled.min())/(time_unscaled.max()-time_unscaled.min()) - 1
+    t_norm = 2*(time_unscaled - time_unscaled.min()) / \
+        (time_unscaled.max()-time_unscaled.min()) - 1
 
     # normalize derived features
     param_means = thetas_D.mean(axis=0)
-    param_stds  = thetas_D.std(axis=0)
-    theta_norm  = (thetas_D - param_means)/param_stds
+    param_stds = thetas_D.std(axis=0)
+    theta_norm = (thetas_D - param_means)/param_stds
 
     # build inputs (flatten)
-    t_grid     = np.broadcast_to(t_norm, (samples, WAVEFORM_LENGTH))
-    theta_grid = np.broadcast_to(theta_norm[:,None,:], (samples, WAVEFORM_LENGTH, D))
-    inputs     = np.concatenate([t_grid[...,None], theta_grid], axis=-1).reshape(-1,1+D)
+    t_grid = np.broadcast_to(t_norm, (samples, WAVEFORM_LENGTH))
+    theta_grid = np.broadcast_to(
+        theta_norm[:, None, :], (samples, WAVEFORM_LENGTH, D))
+    inputs = np.concatenate(
+        [t_grid[..., None], theta_grid], axis=-1).reshape(-1, 1+D)
 
-    targets_A   = all_log_amp_norm.reshape(-1,1)
-    targets_phi = all_phi_unwrap.reshape(-1,1)
+    targets_A = all_amp_scaled.reshape(-1, 1)
+    targets_phi = all_phi_unwrap.reshape(-1, 1)
 
     dataset = GeneratedDataset(
         inputs=inputs.astype(np.float32),
@@ -211,8 +315,7 @@ def generate_data(
         targets_phi=targets_phi.astype(np.float32),
         time_unscaled=time_unscaled,
         thetas=thetas,
-        log_amp_min=log_amp_min,
-        log_amp_max=log_amp_max,
+        amp_scale=scale,
         phi_unwrap=all_phi_unwrap,
         param_means=param_means,
         param_stds=param_stds,
@@ -226,7 +329,7 @@ def generate_data(
         dataset.targets_A,
         dataset.targets_phi,
         dataset.thetas,
-        dataset.phi_unwrap
+        dataset.phi_unwrap,
     ]
     total_bytes = sum(sizeof_numpy_array(a) for a in arrays)
     logger.info(f" Dataset in‐memory size: {total_bytes/1024**3:.3f} GB "
@@ -237,3 +340,100 @@ def generate_data(
     logger.info(f" → Process RSS after data gen: {rss/1024**3:.3f} GB")
 
     return dataset
+
+
+def pick_batch_size(X, A, phi, safety=0.1, max_cap=None):
+    """Return the largest batch size that fits in (safety * free GPU mem)."""
+    # per‐sample byte footprint
+    N = X.size(0)
+    bytes_per = (
+        X.element_size()*X.nelement() +
+        A.element_size()*A.nelement() +
+        phi.element_size()*phi.nelement()
+    ) / N
+
+    props = torch.cuda.get_device_properties(0)
+    total = props.total_memory
+    reserved = torch.cuda.memory_reserved(0)
+    free_mem = total - reserved
+
+    batch = int((free_mem * safety) // bytes_per)
+    if max_cap is not None:
+        batch = min(batch, max_cap)
+    return max(batch, 1)
+
+
+def save_dataset(data, path='dataset.pt'):
+    """
+    Save the entire `data` object to disk.
+    """
+    torch.save(data, path)
+
+
+def load_dataset(path='dataset.pt', device='cuda'):
+    """
+    Load back the full `data` object exactly as it was.
+    If you need the tensors on GPU, we map_location accordingly.
+    """
+    data = torch.load(path, map_location='cpu', weights_only=False)
+    # move arrays onto GPU
+    if DEVICE == 'cuda':
+        data.inputs = torch.from_numpy(data.inputs).to(device)
+        data.targets_A = torch.from_numpy(data.targets_A).to(device)
+        data.targets_phi = torch.from_numpy(data.targets_phi).to(device)
+    return data
+
+
+def make_loaders(data):
+    """Generate train/val loaders for amplitude & phase."""
+    X = torch.from_numpy(data.inputs).to(DEVICE)      # (N_total,7)
+    A = torch.from_numpy(data.targets_A).to(DEVICE)   # (N_total,1)
+    phi = torch.from_numpy(data.targets_phi).to(DEVICE)  # (N_total,1)
+
+    bytes_X = sizeof_tensor(X)
+    bytes_A = sizeof_tensor(A)
+    bytes_phi = sizeof_tensor(phi)
+    logger.info(f" -> GPU tensors allocated:"
+                f"  X={bytes_X/1024**2:.1f} MB,"
+                f"  A={bytes_A/1024**2:.1f} MB,"
+                f"  phi={bytes_phi/1024**2:.1f} MB")
+
+    if torch.cuda.is_available():
+        used = torch.cuda.memory_allocated(DEVICE)
+        reserved = torch.cuda.memory_reserved(DEVICE)
+        BS = pick_batch_size(X, A, phi, safety=0.01, max_cap=BATCH_SIZE)
+        logger.info(f" -> torch.cuda memory: allocated={used/1024**3:.3f} GB,"
+                    f" reserved={reserved/1024**3:.3f} GB,"
+                    f" using BS={BS}")
+    else:
+        BS = 64
+        logger.info(f"Using default batch size of {BS} for cpu...")
+
+    idx = list(range(X.size(0)))
+    train_idx, val_idx = train_test_split(
+        idx, test_size=VAL_SPLIT,
+        random_state=RANDOM_SEED, shuffle=True,
+    )
+
+    train_ds_amp = TensorDataset(X[train_idx], A[train_idx])
+    val_ds_amp = TensorDataset(X[val_idx],   A[val_idx])
+    train_ds_phi = TensorDataset(X[train_idx], phi[train_idx])
+    val_ds_phi = TensorDataset(X[val_idx],   phi[val_idx])
+    train_ds_joint = TensorDataset(X[train_idx], A[train_idx], phi[train_idx])
+    val_ds_joint = TensorDataset(X[val_idx],   A[val_idx], phi[val_idx])
+
+    loaders = {
+        'amp': {
+            'train': DataLoader(train_ds_amp,   batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_amp,     batch_size=BS, shuffle=False),
+        },
+        'phase': {
+            'train': DataLoader(train_ds_phi,   batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_phi,     batch_size=BS, shuffle=False),
+        },
+        'joint': {
+            'train': DataLoader(train_ds_joint, batch_size=BS, shuffle=True),
+            'val':   DataLoader(val_ds_joint,   batch_size=BS, shuffle=False),
+        },
+    }
+    return loaders

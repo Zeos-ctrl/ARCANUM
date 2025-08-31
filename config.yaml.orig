@@ -1,0 +1,126 @@
+pycbc:
+  seobnrv4:
+    waveform_name:   "SEOBNRv4"
+<<<<<<< HEAD
+    delta_t:         1024
+    f_lower:         20.0
+    detector_name:   "H1"
+    waveform_length: 512
+
+  phenomd:
+    waveform_name:   "IMRPhenomD"
+    delta_t:         1024
+=======
+    delta_t:         2048
+    f_lower:         20.0
+    detector_name:   "H1"
+    waveform_length: 2048
+
+  phenomd:
+    waveform_name:   "IMRPhenomD"
+    delta_t:         2048
+>>>>>>> origin/dev
+    f_lower:         20.0
+    detector_name:   "H1"
+    waveform_length: 2048
+
+model:
+  amp_emb_hidden: [64,64]
+<<<<<<< HEAD
+  amp_hidden: [256,256,256,256]
+  amp_banks: 4
+  phase_emb_hidden: [64,64]
+  phase_hidden: [256,256,256,256,256]
+  phase_banks: 4
+
+sampling_ranges:
+  mass_min:     20.0
+  mass_max:     50.0
+  spin_mag_min: -0.3
+  spin_mag_max:  0.3
+=======
+  amp_hidden: [256,256,256]
+  amp_banks: 3
+  amp_dropout: 0.15
+  amp_lr: 0.0005
+  amp_clip: 3
+  phase_emb_hidden: [64,64]
+  phase_hidden: [256,256,256,256,256]
+  phase_banks: 6
+  phase_dropout: 0.15
+  phase_lr: 0.0005
+  phase_clip: 4
+
+sampling_ranges:
+  mass_min:     50.0
+  mass_max:     100.0
+  spin_mag_min: -0.7
+  spin_mag_max:  0.7
+>>>>>>> origin/dev
+  incl_min:      0.0
+  incl_max:      3.141592653589793
+  ecc_min:       0.0
+  ecc_max:       0.3
+  clean:         True # clean or noisy data
+  snr_min:       10
+  snr_max:       20
+
+training:
+  # Data & splitting
+<<<<<<< HEAD
+  num_samples:    10
+=======
+  num_samples:    1000
+>>>>>>> origin/dev
+  val_split:      0.3
+  random_seed:    42
+
+  # Optimization
+  optimizer:      "adam"
+  learning_rate:  0.005
+  weight_decay:   0.1
+
+  # Batching & epochs
+<<<<<<< HEAD
+  batch_size:     2056
+=======
+  batch_size:     32768
+>>>>>>> origin/dev
+  num_epochs:     200
+  patience:       50
+  min_delta:      1e-6
+  gradient_clip:  1.0
+
+  # Scheduler
+  scheduler:
+    lr_decay_factor: 0.5
+    lr_patience:     10
+    min_lr:          1e-6
+
+  # Hyperparameter search
+  hpo:
+    n_trials:       50
+    sampler:        "tpe"
+    timeout:        null
+
+  # Misc
+  seed_everything: true
+
+device: "cuda"
+
+notifications:
+<<<<<<< HEAD
+  webhook_url:  
+    "https://discord.com/api/webhooks/1392085647480721428/wDGdLRmMXrStJXhobZTjkAa4SrW35BKoRTMcdLKBFDdq-qiECTjD-2SYLa4cLL3ZU2Bx"
+  discord_bot_token: ""
+  status_channel_id: 1392085614375206932
+  guild_id: 1392085562323636348
+=======
+  webhook_url: 0
+  discord_bot_token: ""
+  status_channel_id: 0
+  guild_id: 0
+>>>>>>> origin/dev
+
+paths:
+  checkpoint_dir: "checkpoints"
